@@ -6,12 +6,14 @@ use std::sync::mpsc::{self, Sender, Receiver, TryRecvError};
 use std::time::Duration;
 use log::info;
 use std::env;
+use std::sync::{Arc, Mutex};
 
 enum ShellOutput {
     Line(String),
     Terminated,
 }
 
+#[derive(Clone)] // Add this line before Shell struct definition
 pub struct Shell {
     pub lines: Vec<String>,
     pub input_line: String,
@@ -21,11 +23,11 @@ pub struct Shell {
     pub command_history: Vec<String>,
     pub history_position: usize,
 
-    child: Option<Child>,
-    child_stdin: Option<ChildStdin>,
-    output_receiver: Option<Receiver<ShellOutput>>,
+    child: Arc<Mutex<Option<Child>>>,
+    child_stdin: Arc<Mutex<Option<ChildStdin>>>,
+    output_receiver: Arc<Mutex<Option<Receiver<ShellOutput>>>>,
     // Keep track of the reader threads to join them on drop
-    reader_thread_handles: Vec<thread::JoinHandle<()>>,
+    reader_thread_handles: Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
 }
 
 impl Shell {
@@ -39,10 +41,10 @@ impl Shell {
             running: true,
             command_history: Vec::new(),
             history_position: 0,
-            child: None,
-            child_stdin: None,
-            output_receiver: None,
-            reader_thread_handles: Vec::new(),
+            child: Arc::new(Mutex::new(None)),
+            child_stdin: Arc::new(Mutex::new(None)),
+            output_receiver: Arc::new(Mutex::new(None)),
+            reader_thread_handles: Arc::new(Mutex::new(Vec::new())),
         };
 
         if let Err(e) = shell_instance.spawn_system_shell() {
@@ -70,16 +72,21 @@ impl Shell {
             .spawn()
             .map_err(|e| Error::ShellSpawnError(format!("Failed to spawn shell: {}", e)))?;
 
-        self.child_stdin = child_process.stdin.take();
         let child_stdout = child_process.stdout.take()
             .ok_or_else(|| Error::ShellSpawnError("Failed to capture stdout".to_string()))?;
         let child_stderr = child_process.stderr.take()
             .ok_or_else(|| Error::ShellSpawnError("Failed to capture stderr".to_string()))?;
         
-        self.child = Some(child_process);
+        {
+            let mut child_lock = self.child.lock().unwrap();
+            *child_lock = Some(child_process);
+        }
 
         let (tx, rx) = mpsc::channel();
-        self.output_receiver = Some(rx);
+        {
+            let mut receiver_lock = self.output_receiver.lock().unwrap();
+            *receiver_lock = Some(rx);
+        }
 
         let stdout_tx = tx.clone();
         let stdout_handle = thread::spawn(move || {
@@ -96,7 +103,7 @@ impl Shell {
             }
             let _ = stdout_tx.send(ShellOutput::Terminated); // Signal stdout termination
         });
-        self.reader_thread_handles.push(stdout_handle);
+        self.reader_thread_handles.lock().unwrap().push(stdout_handle);
 
         let stderr_tx = tx;
         let stderr_handle = thread::spawn(move || {
@@ -114,51 +121,62 @@ impl Shell {
             // Note: We don't send Terminated from stderr to avoid duplicate signals
             // if stdout also terminates. The main child process termination check is more reliable.
         });
-        self.reader_thread_handles.push(stderr_handle);
+        self.reader_thread_handles.lock().unwrap().push(stderr_handle);
         
         Ok(())
     }
     
     pub fn poll_output(&mut self) {
-        if let Some(rx) = &self.output_receiver {
-            loop {
-                match rx.try_recv() {
-                    Ok(ShellOutput::Line(line)) => {
-                        self.lines.push(line);
-                    }
-                    Ok(ShellOutput::Terminated) => {
-                        info!("A shell output stream terminated.");
-                    }
-                    Err(TryRecvError::Empty) => {
-                        break; 
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        info!("Shell output channel disconnected. Shell likely terminated.");
-                        self.running = false;
-                        self.output_receiver = None; 
-                        break;
+        if let Ok(rx_guard) = self.output_receiver.lock() {
+            if let Some(rx) = &*rx_guard {
+                loop {
+                    match rx.try_recv() {
+                        Ok(ShellOutput::Line(line)) => {
+                            self.lines.push(line);
+                        }
+                        Ok(ShellOutput::Terminated) => {
+                            info!("A shell output stream terminated.");
+                        }
+                        Err(TryRecvError::Empty) => {
+                            break; 
+                        }
+                        Err(TryRecvError::Disconnected) => {
+                            info!("Shell output channel disconnected. Shell likely terminated.");
+                            self.running = false;
+                            {
+                                let mut receiver_lock = self.output_receiver.lock().unwrap();
+                                *receiver_lock = None; 
+                            }
+                            break;
+                        }
                     }
                 }
             }
         }
 
         if self.running { // Only check if we think it's running
-            if let Some(child) = &mut self.child {
+            if let Some(child) = &mut *self.child.lock().unwrap() {
                 match child.try_wait() {
                     Ok(Some(status)) => { 
                         info!("Shell process exited with status: {}", status);
                         self.running = false;
-                        self.child = None; 
+                        {
+                            let mut child_lock = self.child.lock().unwrap();
+                            *child_lock = None; 
+                        }
                     }
                     Ok(None) => { 
                     }
                     Err(e) => { 
                         info!("Error waiting for shell process: {}", e);
                         self.running = false;
-                        self.child = None;
+                        {
+                            let mut child_lock = self.child.lock().unwrap();
+                            *child_lock = None;
+                        }
                     }
                 }
-            } else if self.output_receiver.is_none() { 
+            } else if self.output_receiver.lock().unwrap().is_none() { 
                  self.running = false;
             }
         }
@@ -174,7 +192,7 @@ impl Shell {
         // This will also attempt to tell the underlying system shell to exit.
         if command_trimmed == "exit" {
              info!("RVim 'exit' command detected. Attempting to close system shell and exit RVim shell mode.");
-             if let Some(stdin) = &mut self.child_stdin {
+             if let Some(stdin) = &mut *self.child_stdin.lock().unwrap() {
                  // Send "exit" command to the actual shell
                  if writeln!(stdin, "exit").is_ok() {
                      let _ = stdin.flush();
@@ -192,7 +210,7 @@ impl Shell {
         }
 
 
-        if let Some(stdin) = &mut self.child_stdin {
+        if let Some(stdin) = &mut *self.child_stdin.lock().unwrap() {
             if !self.input_line.is_empty() {
                 if !self.input_line.trim().is_empty() {
                     self.command_history.push(self.input_line.clone());
@@ -283,11 +301,11 @@ impl Shell {
 impl Drop for Shell {
     fn drop(&mut self) {
         info!("Dropping Shell instance.");
-        if let Some(mut child) = self.child.take() {
+        if let Some(mut child) = self.child.lock().unwrap().take() {
             let child_id = child.id();
             info!("Terminating child shell process (PID: {}).", child_id);
 
-            drop(self.child_stdin.take());
+            drop(self.child_stdin.lock().unwrap().take());
 
             match child.try_wait() {
                 Ok(Some(_)) => { 
@@ -311,7 +329,7 @@ impl Drop for Shell {
             }
         }
         // Join reader threads
-        while let Some(handle) = self.reader_thread_handles.pop() {
+        while let Some(handle) = self.reader_thread_handles.lock().unwrap().pop() {
             if let Err(e) = handle.join() {
                 info!("Error joining reader thread: {:?}", e);
             }

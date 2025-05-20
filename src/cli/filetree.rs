@@ -2,7 +2,12 @@ use std::error::Error as StdError;
 use std::fs;
 use std::path::{Path, PathBuf};
 use log::info;
+use log::error;
 use crate::error::{Error, Result};
+use notify::{Watcher, RecursiveMode, RecommendedWatcher};
+use std::sync::mpsc::{channel, Receiver};
+use std::process::Command;
+use std::collections::HashMap;
 
 pub struct FileTreeEntry {
     pub name: String,
@@ -19,6 +24,24 @@ pub struct FileTree {
     pub cursor: usize,
     pub visible: bool,
     pub width: usize,
+    watcher: Option<RecommendedWatcher>,
+    fs_events: Option<Receiver<notify::Result<notify::Event>>>,
+    git_statuses: HashMap<PathBuf, GitStatus>,
+}
+
+#[derive(Clone, PartialEq)]
+enum GitStatus {
+    Modified,
+    Added,
+    Deleted,
+    Untracked,
+    Clean,
+}
+
+impl From<notify::Error> for Error {
+    fn from(err: notify::Error) -> Self {
+        Error::Message(format!("File watch error: {}", err))
+    }
 }
 
 impl FileTree {
@@ -33,15 +56,27 @@ impl FileTree {
 
         info!("Initializing file tree at: {:?}", root);
 
+        // Setup file watching
+        let (tx, rx) = channel();
+        let mut watcher = notify::recommended_watcher(move |res| {
+            let _ = tx.send(res);
+        })?;
+        watcher.watch(path, RecursiveMode::Recursive)?;
+
         let mut tree = Self {
             root: root.clone(),
             entries: vec![],
             cursor: 0,
             visible: false,
             width: 30, // Default width
+            watcher: Some(watcher),
+            fs_events: Some(rx),
+            git_statuses: HashMap::new(),
         };
 
         tree.refresh()?;
+        tree.update_git_status()?;
+
         Ok(tree)
     }
 
@@ -259,5 +294,87 @@ impl FileTree {
         }
         
         Some(self.entries[self.cursor].path.clone())
+    }
+    
+    // Clone event before using it
+    pub fn handle_fs_event(&mut self, event: notify::Event) -> Result<()> {
+        let event_kind = event.kind;
+        let paths = event.paths.clone();
+        
+        match event_kind {
+            notify::EventKind::Create(_) |
+            notify::EventKind::Remove(_) |
+            notify::EventKind::Modify(_) => {
+                self.refresh()?;
+                self.update_git_status()?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    
+    fn update_git_status(&mut self) -> Result<()> {
+        let output = Command::new("git")
+            .args(&["status", "--porcelain"])
+            .current_dir(&self.root)
+            .output()
+            .map_err(|e| Error::Message(format!("Git error: {}", e)))?;
+            
+        if output.status.success() {
+            self.git_statuses.clear();
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if line.len() < 3 { continue; }
+                let status = &line[0..2];
+                let path = self.root.join(&line[3..]);
+                
+                let git_status = match status.trim() {
+                    "M" => GitStatus::Modified,
+                    "A" => GitStatus::Added,
+                    "D" => GitStatus::Deleted,
+                    "??" => GitStatus::Untracked,
+                    _ => GitStatus::Clean,
+                };
+                
+                self.git_statuses.insert(path, git_status);
+            }
+        }
+        Ok(())
+    }
+    
+    pub fn check_file_updates(&mut self) -> Result<()> {
+        let mut paths_to_update = Vec::new();
+        if let Some(rx) = &self.fs_events {
+            while let Ok(event_result) = rx.try_recv() {
+                match event_result {
+                    Ok(event) => {
+                        paths_to_update.push((event.paths.clone(), event.kind));
+                    }
+                    Err(e) => {
+                        return Err(Error::from(e));
+                    }
+                }
+            }
+        }
+        
+        // Process collected events after releasing the borrow on fs_events
+        for (paths, kind) in paths_to_update {
+            self.handle_fs_event_impl(paths, kind)?;
+        }
+        
+        Ok(())
+    }
+
+    // New helper method to handle events without cloning
+    fn handle_fs_event_impl(&mut self, paths: Vec<PathBuf>, kind: notify::EventKind) -> Result<()> {
+        match kind {
+            notify::EventKind::Create(_) |
+            notify::EventKind::Remove(_) |
+            notify::EventKind::Modify(_) => {
+                self.refresh()?;
+                self.update_git_status()?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }

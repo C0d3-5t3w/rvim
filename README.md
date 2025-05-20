@@ -36,6 +36,38 @@ RVim is a lightweight, modern Vim clone written in Rust with a Lua configuration
   - Fast and memory-efficient
   - Cross-platform (Linux, macOS, Windows)
 
+## Enhanced Features
+
+- **Smart Text Editing**
+  - Rope-based text storage for efficient editing
+  - Multi-cursor support
+  - Advanced undo/redo
+  - Smart indentation
+
+- **Advanced Syntax Highlighting**
+  - Tree-sitter integration
+  - Real-time parsing
+  - Custom themes
+  - Multiple language support
+
+- **Fast Fuzzy Finding**
+  - Quick file navigation
+  - Command palette
+  - Symbol search
+  - Project-wide search
+
+- **File System Integration**
+  - Real-time file watching
+  - Auto-reload
+  - Git status integration
+  - Project-wide search/replace
+
+- **Performance Optimizations**
+  - Parallel processing
+  - Async I/O
+  - Thread-safe data structures
+  - Efficient synchronization
+
 ## Quick Start
 
 ### Installation
@@ -135,6 +167,21 @@ local settings = {
 ```
 
 For detailed documentation, see the [DOC.md](doc/DOC.md) file.
+
+## Dependencies
+
+RVim leverages several high-quality Rust crates:
+
+- **ropey**: Efficient text editing
+- **tree-sitter**: Syntax parsing
+- **fuzzy-matcher**: Fuzzy finding
+- **notify**: File system events
+- **rayon**: Parallel processing
+- **syntect**: Syntax highlighting
+- **regex**: Pattern matching
+- **toml**: Configuration parsing
+- **tokio**: Async runtime
+- **dashmap**: Thread-safe maps
 
 ## Development Status
 

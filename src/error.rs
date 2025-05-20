@@ -64,6 +64,11 @@ pub enum Error {
     
     /// Other unknown errors
     Other(Box<dyn StdError + Send + Sync>),
+    
+    /// Tab-related errors
+    TabError(String),
+    TabNotFound(usize),
+    TabExists(String),
 }
 
 /// Type alias for RVim's Result type
@@ -111,6 +116,9 @@ impl fmt::Display for Error {
             Error::Message(msg) => write!(f, "{}", msg),
             Error::LockError(msg) => write!(f, "Lock error: {}", msg),
             Error::Other(err) => write!(f, "Error: {}", err),
+            Error::TabError(msg) => write!(f, "Tab error: {}", msg),
+            Error::TabNotFound(id) => write!(f, "Tab not found: {}", id),
+            Error::TabExists(name) => write!(f, "Tab already exists: {}", name),
         }
     }
 }

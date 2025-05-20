@@ -7,9 +7,10 @@ use std::env;
 use std::fs;
 use log::{info, error, warn};
 use crate::error::{Error, Result};
+use tree_sitter::Language;
 
 /// Map file extensions to language IDs
-fn get_language_id_from_extension(ext: &str) -> Option<&'static str> {
+pub fn get_language_id_from_extension(ext: &str) -> Option<&'static str> {
     match ext.to_lowercase().as_str() {
         "rs" => Some("rust"),
         "go" => Some("go"),
@@ -331,5 +332,16 @@ impl Drop for LspManager {
         if let Err(e) = self.shutdown_all_servers() {
             error!("Error shutting down language servers: {}", e);
         }
+    }
+}
+
+/// This is a placeholder - you'll need to implement proper language loading
+pub fn get_language(lang_id: &str) -> Option<Language> {
+    match lang_id {
+        "rust" => tree_sitter_rust::language(),
+        "javascript" => tree_sitter_javascript::language(),
+        "python" => tree_sitter_python::language(),
+        "lua" => tree_sitter_lua::language(),
+        _ => None,
     }
 }

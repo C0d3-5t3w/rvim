@@ -18,7 +18,11 @@ use std::env;
 use crate::cli::filetree::FileTree;
 use crate::cli::window::{Window, SplitType};
 use crate::cli::shell::Shell;
+use crate::cli::tabs::TabManager;
 use crate::error::{Error, Result};
+use crate::cli::buffer::Buffer; // Use the buffer module's Buffer type
+use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
 
 // Editor modes
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -29,68 +33,8 @@ enum Mode {
     Command,
     FileTree,
     Shell,
-    Help, // Added Help mode
-}
-
-// Buffer represents a single open file or shell
-struct Buffer {
-    document: Document,
-    cursor_x: usize,
-    cursor_y: usize,
-    offset_x: usize,
-    offset_y: usize,
-    is_shell: bool,
-    shell: Option<Shell>,
-    filename: Option<String>,
-}
-
-impl Buffer {
-    fn new() -> Self {
-        Self {
-            document: Document::new(),
-            cursor_x: 0,
-            cursor_y: 0,
-            offset_x: 0,
-            offset_y: 0,
-            is_shell: false,
-            shell: None,
-            filename: None,
-        }
-    }
-
-    fn from_file(filename: &str) -> Result<Self> {
-        let document = Document::from_file(filename)?;
-        Ok(Self {
-            document,
-            cursor_x: 0,
-            cursor_y: 0,
-            offset_x: 0,
-            offset_y: 0,
-            is_shell: false,
-            shell: None,
-            filename: Some(filename.to_string()),
-        })
-    }
-
-    fn from_shell(is_horizontal: bool) -> Self {
-        Self {
-            document: Document::new(), // Empty document for shells
-            cursor_x: 0,
-            cursor_y: 0,
-            offset_x: 0,
-            offset_y: 0,
-            is_shell: true,
-            shell: Some(Shell::new(is_horizontal)),
-            filename: None,
-        }
-    }
-
-    fn save(&mut self) -> Result<()> {
-        if self.is_shell {
-            return Err(crate::error::Error::Message("Cannot save shell buffer".into()));
-        }
-        self.document.save()
-    }
+    Help,
+    TabSwitcher, // Add new mode for tab switching
 }
 
 // Document representation
@@ -184,6 +128,10 @@ pub struct Editor {
     previous_mode: Mode,
     windows: Vec<Window>,
     active_window: usize,
+    tab_manager: TabManager,
+    fuzzy_matcher: SkimMatcherV2,
+    fuzzy_results: Vec<(String, i64)>, // (path, score)
+    command_palette_items: Vec<String>,
 }
 
 impl Editor {
@@ -227,6 +175,10 @@ impl Editor {
             previous_mode: Mode::Normal,
             windows: vec![initial_window],
             active_window: 0,
+            tab_manager: TabManager::new(),
+            fuzzy_matcher: SkimMatcherV2::default(),
+            fuzzy_results: Vec::new(),
+            command_palette_items: Vec::new(),
         };
         
         // Load Lua configuration
@@ -236,29 +188,28 @@ impl Editor {
         let current_dir = env::current_dir()?;
         editor.file_tree = Some(FileTree::new(&current_dir)?);
         
+        // Initialize command palette items
+        editor.command_palette_items = vec![
+            ":w".to_string(),
+            ":q".to_string(),
+            ":wq".to_string(),
+            ":help".to_string(),
+            // Add more commands
+        ];
+        
         Ok(editor)
     }
     
     pub fn open_file(&mut self, filename: &str) -> Result<()> {
         let buffer = Buffer::from_file(filename)?;
         
-        // Replace the current buffer with the new one
-        if self.buffers.is_empty() {
-            self.buffers.push(buffer);
-            self.active_buffer = 0;
-        } else {
-            self.buffers[self.active_buffer] = buffer;
-        }
+        // Create a new tab for the file
+        self.tab_manager.create_tab(filename.to_string(), buffer)?;
         
         // Update file tree path to new file's directory
         let path = PathBuf::from(filename);
         if let Some(parent) = path.parent() {
             self.file_tree = Some(FileTree::new(parent)?);
-        }
-        
-        // Set the file path for the active window
-        if !self.windows.is_empty() {
-            self.windows[self.active_window].file_path = Some(path);
         }
         
         Ok(())
@@ -396,6 +347,54 @@ impl Editor {
         Ok(())
     }
     
+    fn draw_tabs(&self) -> Result<()> {
+        let start_x = 0;
+        let start_y = 0;
+        let tab_list = self.tab_manager.tab_list();
+        let mut current_x = start_x;
+
+        execute!(io::stdout(), cursor::MoveTo(0, 0))?;
+
+        // Draw tab bar background
+        execute!(
+            io::stdout(),
+            SetBackgroundColor(Color::DarkGrey),
+            SetForegroundColor(Color::White)
+        )?;
+
+        for x in 0..self.terminal_width {
+            execute!(io::stdout(), cursor::MoveTo(x as u16, start_y as u16))?;
+            print!(" ");
+        }
+
+        // Draw each tab
+        for (idx, (id, name)) in tab_list.iter().enumerate() {
+            let is_current = idx == self.tab_manager.current_tab();
+            let tab_style = if is_current {
+                execute!(
+                    io::stdout(),
+                    SetBackgroundColor(Color::Blue),
+                    SetForegroundColor(Color::White)
+                )
+            } else {
+                execute!(
+                    io::stdout(),
+                    SetBackgroundColor(Color::DarkGrey),
+                    SetForegroundColor(Color::White)
+                )
+            }?;
+
+            let tab_text = format!(" {} ", name);
+            execute!(io::stdout(), cursor::MoveTo(current_x as u16, start_y as u16))?;
+            print!("{}", tab_text);
+            
+            current_x += tab_text.len();
+        }
+
+        execute!(io::stdout(), ResetColor)?;
+        Ok(())
+    }
+
     fn refresh_screen(&mut self) -> Result<()> {
         // Poll shell output if in shell mode and buffer exists
         if self.mode == Mode::Shell {
@@ -418,10 +417,16 @@ impl Editor {
             cursor::MoveTo(0, 0)
         )?;
 
+        // Draw tabs at the top
+        self.draw_tabs()?;
+
+        // Adjust other content to start below tabs
+        let content_offset = 1; // Height of tab bar
+
         if self.mode == Mode::Help {
             self.draw_help_screen()?;
         } else {
-            // Draw the file tree if visible
+            // Adjust filetree and windows to start below tabs
             let filetree_offset = if let Some(tree) = &self.file_tree {
                 if tree.visible {
                     self.draw_file_tree()?;
@@ -743,7 +748,8 @@ impl Editor {
             Mode::Command => " COMMAND ",
             Mode::FileTree => " FILE TREE ",
             Mode::Shell => " SHELL ",
-            Mode::Help => " HELP ", // Added Help status
+            Mode::Help => " HELP ",
+            Mode::TabSwitcher => " TAB ",
         };
         
         // Get buffer info
@@ -760,19 +766,20 @@ impl Editor {
             "[No Buffer]".to_string()
         };
         
-        let cursor_info = if !self.buffers.is_empty() && self.active_buffer < self.buffers.len() {
-            let buffer = &self.buffers[self.active_buffer];
-            if buffer.is_shell {
-                // For shell, show nothing special for now
-                "".to_string()
-            } else {
-                format!(" - {}/{}", buffer.cursor_y + 1, buffer.document.lines.len())
-            }
-        } else {
-            "".to_string()
-        };
-        
-        let status_line = format!("{}{}{}", status, buffer_info, cursor_info);
+        // Add tab list to status line
+        let tabs = self.tab_manager.tab_list()
+            .iter()
+            .map(|(id, name)| {
+                if *id == self.tab_manager.current_tab() {
+                    format!("[*{}]", name)
+                } else {
+                    format!("[{}]", name)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let status_line = format!("{}{} {}", status, buffer_info, tabs);
         
         execute!(
             io::stdout(),
@@ -923,7 +930,8 @@ impl Editor {
                     Mode::Command => self.process_command_mode(key_event)?,
                     Mode::FileTree => self.process_file_tree_mode(key_event)?,
                     Mode::Shell => self.process_shell_mode(key_event)?,
-                    Mode::Help => self.process_help_mode(key_event)?, // Added help mode processing
+                    Mode::Help => self.process_help_mode(key_event)?,
+                    Mode::TabSwitcher => self.process_tab_switcher_mode(key_event)?,
                 }
             },
             Event::Mouse(mouse_event) => {
@@ -939,15 +947,25 @@ impl Editor {
         match key.code {
             KeyCode::Char(' ') => {
                 self.waiting_for_second_key = true;
-                return Ok(());
+                Ok(())
             },
-            KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('q') => {
+                self.quit = true;
+                Ok(())
+            },
             KeyCode::Char(':') => {
                 self.mode = Mode::Command;
                 self.command_line.clear();
+                Ok(())
             },
-            KeyCode::Char('i') => self.mode = Mode::Insert,
-            KeyCode::Char('v') => self.mode = Mode::Visual,
+            KeyCode::Char('i') => {
+                self.mode = Mode::Insert;
+                Ok(())
+            },
+            KeyCode::Char('v') => {
+                self.mode = Mode::Visual;
+                Ok(())
+            },
             KeyCode::Char('h') => self.move_cursor_left(),
             KeyCode::Char('j') => self.move_cursor_down(),
             KeyCode::Char('k') => self.move_cursor_up(),
@@ -955,23 +973,22 @@ impl Editor {
             KeyCode::Char('w') => self.move_to_next_word_start(),
             KeyCode::Char('e') => self.move_to_next_word_end(),
             KeyCode::Char('b') => self.move_to_prev_word_start(),
-            _ => {}
+            _ => Ok(())
         }
-        
-        Ok(())
     }
     
     fn process_visual_mode(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
-            KeyCode::Esc => self.mode = Mode::Normal,
-            KeyCode::Char('h') => self.move_cursor_left(),
-            KeyCode::Char('j') => self.move_cursor_down(),
-            KeyCode::Char('k') => self.move_cursor_up(),
-            KeyCode::Char('l') => self.move_cursor_right(),
-            _ => {}
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                Ok(())
+            },
+            KeyCode::Char('h') => self.move_cursor_left()?,
+            KeyCode::Char('j') => self.move_cursor_down()?,
+            KeyCode::Char('k') => self.move_cursor_up()?,
+            KeyCode::Char('l') => self.move_cursor_right()?,
+            _ => Ok(())
         }
-        
-        Ok(())
     }
     
     fn process_command_mode(&mut self, key: KeyEvent) -> Result<()> {
@@ -1073,7 +1090,6 @@ impl Editor {
         
         match key.code {
             KeyCode::Char('e') => {
-                // Toggle file tree visibility
                 if let Some(tree) = &mut self.file_tree {
                     tree.toggle_visible();
                     if tree.visible {
@@ -1083,584 +1099,248 @@ impl Editor {
                         self.mode = self.previous_mode;
                     }
                 }
+                Ok(())
             },
             KeyCode::Char('v') => {
-                // Open vertical shell
-                self.open_shell(false)?;
+                self.open_shell(false)
             },
             KeyCode::Char('h') => {
-                // Open horizontal shell
-                self.open_shell(true)?;
+                self.open_shell(true)
             },
             KeyCode::Char('w') => {
-                // Cycle through windows
-                self.cycle_window();
+                self.cycle_window()
             },
             KeyCode::Char('q') => {
-                // Close the current window
-                self.close_window()?;
+                self.close_window()
             },
             KeyCode::Char('x') => {
-                // Close the current buffer
-                self.close_current_buffer()?;
+                self.close_current_buffer()
             },
-            _ => {
-                // Ignore other keys after space
-            }
+            KeyCode::Tab => {
+                self.tab_manager.switch_to_next_tab()
+            },
+            KeyCode::BackTab => {
+                self.tab_manager.switch_to_prev_tab()
+            },
+            _ => Ok(()),
         }
-        
-        Ok(())
     }
-    
-    fn process_help_mode(&mut self, _key: KeyEvent) -> Result<()> {
-        // Any key closes help
-        self.mode = Mode::Normal;
-        execute!(io::stdout(), cursor::Show)?; // Ensure cursor is shown when leaving help
-        Ok(())
-    }
-    
-    fn process_mouse_event(&mut self, event: event::MouseEvent) -> Result<()> {
-        // Disable mouse events when help is active
-        if self.mode == Mode::Help {
-            if let event::MouseEventKind::Down(_) = event.kind {
-                self.mode = Mode::Normal; // Close help on mouse click
-                execute!(io::stdout(), cursor::Show)?;
-            }
-            return Ok(());
-        }
 
-        match event.kind {
-            event::MouseEventKind::Down(event::MouseButton::Left) => {
-                // Handle mouse click for positioning cursor or selecting window
-                let (mouse_x, mouse_y) = (event.column as usize, event.row as usize);
-                
-                // Check if click is in the file tree area
-                if self.mode == Mode::FileTree || 
-                   self.file_tree.as_ref().map_or(false, |tree| tree.visible && mouse_x < tree.width) {
-                    if let Some(tree) = &mut self.file_tree {
-                        if mouse_y < self.terminal_height.saturating_sub(2) {
-                            if mouse_y < tree.entries.len() {
-                                tree.cursor = mouse_y;
-                                // Handle double click (simulated with single click here)
-                                if let Some(path) = tree.get_selected_path() {
-                                    if path.is_dir() {
-                                        tree.toggle_expand()?;
-                                    } else {
-                                        // Open file
-                                        let buffer = Buffer::from_file(path.to_str().unwrap())?;
-                                        if !self.buffers.is_empty() {
-                                            self.buffers[self.active_buffer] = buffer;
-                                        } else {
-                                            self.buffers.push(buffer);
-                                            self.active_buffer = 0;
-                                        }
-                                        tree.toggle_visible();
-                                        self.mode = self.previous_mode;
-                                    }
-                                }
-                            }
-                        }
-                        return Ok(());
-                    }
-                }
-                
-                // Check if click is in a window and select it
-                let filetree_offset = if let Some(tree) = &self.file_tree {
-                    if tree.visible { tree.width + 1 } else { 0 }
-                } else { 0 };
-                
-                // First collect windows needing updates
-                let mut selected_window_idx = None;
-                let mut buffer_cursor_update = None;
-                
-                for (idx, window) in self.windows.iter().enumerate() {
-                    let adjusted_x = window.x + filetree_offset;
-                    let window_x_end = adjusted_x + window.width;
-                    let window_y_end = window.y + window.height;
-                    
-                    if mouse_x >= adjusted_x && mouse_x < window_x_end &&
-                       mouse_y >= window.y && mouse_y < window_y_end {
-                        
-                        // Mark this window for selection
-                        if idx != self.active_window {
-                            selected_window_idx = Some(idx);
-                        }
-                        
-                        // Calculate cursor position within the document
-                        let content_x_offset = if self.windows.len() > 1 { 1 } else { 0 };
-                        let content_y_offset = if self.windows.len() > 1 { 1 } else { 0 };
-                        
-                        let buffer_x = mouse_x.saturating_sub(adjusted_x + content_x_offset);
-                        let buffer_y = mouse_y.saturating_sub(window.y + content_y_offset);
-                        
-                        if !self.buffers.is_empty() && self.active_buffer < self.buffers.len() {
-                            buffer_cursor_update = Some((buffer_x, buffer_y));
-                        }
-                        
-                        break;
-                    }
-                }
-                
-                // Now apply the window selection
-                if let Some(new_active_window) = selected_window_idx {
-                    self.windows[self.active_window].is_active = false;
-                    self.active_window = new_active_window;
-                    self.windows[self.active_window].is_active = true;
-                }
-                
-                // Update buffer cursor position
-                if let Some((buffer_x, buffer_y)) = buffer_cursor_update {
-                    if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
-                        // Update buffer cursor position
-                        buffer.cursor_x = buffer.offset_x + buffer_x;
-                        buffer.cursor_y = buffer.offset_y + buffer_y;
-                        
-                        // Ensure cursor is within document bounds
-                        if buffer.cursor_y >= buffer.document.lines.len() {
-                            buffer.cursor_y = buffer.document.lines.len().saturating_sub(1);
-                        }
-                        
-                        if buffer.cursor_y < buffer.document.lines.len() {
-                            let line_len = buffer.document.lines[buffer.cursor_y].len();
-                            if buffer.cursor_x > line_len {
-                                buffer.cursor_x = line_len;
-                            }
-                        }
-                    }
-                }
-            },
-            event::MouseEventKind::ScrollUp => {
-                // Scroll up in the active window/buffer
-                if self.mode == Mode::FileTree {
-                    if let Some(tree) = &mut self.file_tree {
-                        tree.move_cursor_up();
-                    }
-                } else if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
-                    if buffer.offset_y > 0 {
-                        buffer.offset_y -= 1;
-                    }
-                }
-            },
-            event::MouseEventKind::ScrollDown => {
-                // Scroll down in the active window/buffer
-                if self.mode == Mode::FileTree {
-                    if let Some(tree) = &mut self.file_tree {
-                        tree.move_cursor_down();
-                    }
-                } else if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
-                    if buffer.offset_y + self.windows[self.active_window].height < buffer.document.lines.len() {
-                        buffer.offset_y += 1;
-                    }
-                }
-            },
-            _ => {}
-        }
-        
-        Ok(())
-    }
-    
     fn execute_command(&mut self) -> Result<()> {
-        match self.command_line.as_str() {
-            "w" => {
-                if self.buffers.is_empty() || self.active_buffer >= self.buffers.len() {
-                    return Err(Error::Message("No buffer to save".to_string()));
-                }
-                
-                if let Err(e) = self.buffers[self.active_buffer].save() {
-                    self.command_line = format!("Error saving: {}", e);
-                    return Err(e);
-                } else {
-                    self.command_line = "File saved".to_string();
-                    return Ok(());
-                }
-            },
-            "q" => {
+        let cmd = self.command_line.trim();
+        match cmd {
+            "q" | "quit" => {
                 self.quit = true;
                 Ok(())
             },
+            "w" | "write" => {
+                if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
+                    buffer.save()?;
+                }
+                Ok(())
+            },
             "wq" => {
-                if self.buffers.is_empty() || self.active_buffer >= self.buffers.len() {
-                    return Err(Error::Message("No buffer to save".to_string()));
+                if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
+                    buffer.save()?;
                 }
-                
-                if let Err(e) = self.buffers[self.active_buffer].save() {
-                    self.command_line = format!("Error saving: {}", e);
-                    return Err(e);
-                } else {
-                    self.quit = true;
-                    return Ok(());
-                }
+                self.quit = true;
+                Ok(())
             },
             "help" => {
                 self.previous_mode = self.mode;
                 self.mode = Mode::Help;
-                self.command_line.clear();
                 Ok(())
             },
-            _ => {
-                self.command_line = format!("Unknown command: {}", self.command_line);
-                Ok(())
+            _ => Ok(()) // Unknown command just returns Ok
+        }
+    }
+
+    fn move_cursor_left(&mut self) -> Result<()> {
+        if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
+            if buffer.cursor_x > 0 {
+                buffer.cursor_x -= 1;
             }
         }
+        Ok(())
     }
-    
-    // Cursor movement methods
-    fn move_cursor_left(&mut self) {
-        if self.buffers.is_empty() || self.active_buffer >= self.buffers.len() {
-            return;
-        }
-        
-        let buffer = &mut self.buffers[self.active_buffer];
-        if buffer.cursor_x > 0 {
-            buffer.cursor_x -= 1;
-        }
-    }
-    
-    fn move_cursor_right(&mut self) {
-        if self.buffers.is_empty() || self.active_buffer >= self.buffers.len() {
-            return;
-        }
-        
-        let buffer = &mut self.buffers[self.active_buffer];
-        if buffer.cursor_y < buffer.document.lines.len() {
-            let line_len = buffer.document.lines[buffer.cursor_y].len();
+
+    fn move_cursor_right(&mut self) -> Result<()> {
+        if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
+            let line_len = buffer.document.lines.get(buffer.cursor_y)
+                .map(|line| line.len())
+                .unwrap_or(0);
             if buffer.cursor_x < line_len {
                 buffer.cursor_x += 1;
             }
         }
-    }
-    
-    fn move_cursor_up(&mut self) {
-        if self.buffers.is_empty() || self.active_buffer >= self.buffers.len() {
-            return;
-        }
-        
-        let buffer = &mut self.buffers[self.active_buffer];
-        if buffer.cursor_y > 0 {
-            buffer.cursor_y -= 1;
-            let line_len = buffer.document.lines[buffer.cursor_y].len();
-            if buffer.cursor_x > line_len {
-                buffer.cursor_x = line_len;
-            }
-        }
-    }
-    
-    fn move_cursor_down(&mut self) {
-        if self.buffers.is_empty() || self.active_buffer >= self.buffers.len() {
-            return;
-        }
-        
-        let buffer = &mut self.buffers[self.active_buffer];
-        if buffer.cursor_y < buffer.document.lines.len() - 1 {
-            buffer.cursor_y += 1;
-            let line_len = buffer.document.lines[buffer.cursor_y].len();
-            if buffer.cursor_x > line_len {
-                buffer.cursor_x = line_len;
-            }
-        }
-    }
-    
-    // Word navigation methods
-    fn move_to_next_word_start(&mut self) {
-        if self.buffers.is_empty() || self.active_buffer >= self.buffers.len() {
-            return;
-        }
-        
-        let buffer = &mut self.buffers[self.active_buffer];
-        
-        if buffer.cursor_y >= buffer.document.lines.len() {
-            return;
-        }
-        
-        let line = &buffer.document.lines[buffer.cursor_y];
-        let mut found = false;
-        
-        // Try to find next word in current line
-        if buffer.cursor_x < line.len() {
-            let mut in_word = !Editor::is_word_separator(line.chars().nth(buffer.cursor_x).unwrap_or(' '));
-            
-            for (i, c) in line.chars().enumerate().skip(buffer.cursor_x + 1) {
-                if in_word && Editor::is_word_separator(c) {
-                    in_word = false;
-                } else if !in_word && !Editor::is_word_separator(c) {
-                    buffer.cursor_x = i;
-                    found = true;
-                    break;
-                }
-            }
-        }
-        
-        // If no word found in current line, move to next line
-        if !found && buffer.cursor_y < buffer.document.lines.len() - 1 {
-            buffer.cursor_y += 1;
-            buffer.cursor_x = 0;
-            
-            // If the next line is not empty, find first word
-            if !buffer.document.lines[buffer.cursor_y].is_empty() {
-                let line = &buffer.document.lines[buffer.cursor_y];
-                for (i, c) in line.chars().enumerate() {
-                    if !Editor::is_word_separator(c) {
-                        buffer.cursor_x = i;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    
-    fn move_to_next_word_end(&mut self) {
-        if self.buffers.is_empty() || self.active_buffer >= self.buffers.len() {
-            return;
-        }
-        
-        let buffer = &mut self.buffers[self.active_buffer];
-        
-        if buffer.cursor_y >= buffer.document.lines.len() {
-            return;
-        }
-        
-        let line = &buffer.document.lines[buffer.cursor_y];
-        let mut found = false;
-        
-        // Try to find word end in current line
-        if buffer.cursor_x < line.len() {
-            let mut in_word = !Editor::is_word_separator(line.chars().nth(buffer.cursor_x).unwrap_or(' '));
-            
-            for (i, c) in line.chars().enumerate().skip(buffer.cursor_x + 1) {
-                if !in_word && !Editor::is_word_separator(c) {
-                    in_word = true;
-                } else if in_word && Editor::is_word_separator(c) {
-                    buffer.cursor_x = i - 1;
-                    found = true;
-                    break;
-                }
-            }
-            
-            // Check if we're at the end of a word at the end of the line
-            if !found && in_word && buffer.cursor_x < line.len() - 1 {
-                buffer.cursor_x = line.len() - 1;
-                found = true;
-            }
-        }
-        
-        // If no word end found in current line, move to next line
-        if !found && buffer.cursor_y < buffer.document.lines.len() - 1 {
-            buffer.cursor_y += 1;
-            buffer.cursor_x = 0;
-            
-            // Find first word end in the next line
-            let line = &buffer.document.lines[buffer.cursor_y];
-            if !line.is_empty() {
-                let mut in_word = !Editor::is_word_separator(line.chars().next().unwrap_or(' '));
-                
-                for (i, c) in line.chars().enumerate().skip(1) {
-                    if in_word && Editor::is_word_separator(c) {
-                        buffer.cursor_x = i - 1;
-                        found = true;
-                        break;
-                    } else if !in_word && !Editor::is_word_separator(c) {
-                        in_word = true;
-                    }
-                }
-                
-                // If we have a word at the end of the line
-                if !found && in_word && !line.is_empty() {
-                    buffer.cursor_x = line.len() - 1;
-                }
-            }
-        }
-    }
-    
-    fn move_to_prev_word_start(&mut self) {
-        if self.buffers.is_empty() || self.active_buffer >= self.buffers.len() {
-            return;
-        }
-        
-        let buffer = &mut self.buffers[self.active_buffer];
-        
-        if buffer.cursor_y >= buffer.document.lines.len() {
-            return;
-        }
-        
-        let line = &buffer.document.lines[buffer.cursor_y];
-        let mut found = false;
-        
-        // Try to find previous word in current line
-        if buffer.cursor_x > 0 {
-            let mut pos = buffer.cursor_x;
-            
-            // If we're in the middle of a word, go to its start
-            while pos > 0 && !Editor::is_word_separator(line.chars().nth(pos - 1).unwrap_or(' ')) {
-                pos -= 1;
-            }
-            
-            // If we moved, we found the start of the current word
-            if pos < buffer.cursor_x {
-                buffer.cursor_x = pos;
-                found = true;
-            } else {
-                // Otherwise we need to find the previous word
-                while pos > 0 {
-                    pos -= 1;
-                    if !Editor::is_word_separator(line.chars().nth(pos).unwrap_or(' ')) {
-                        // We found a word character, now go to its start
-                        while pos > 0 && !Editor::is_word_separator(line.chars().nth(pos - 1).unwrap_or(' ')) {
-                            pos -= 1;
-                        }
-                        buffer.cursor_x = pos;
-                        found = true;
-                        break;
-                    }
-                }
-            }
-        }
-        
-    }
-
-    fn cycle_window(&mut self) {
-        if self.windows.len() > 1 {
-            self.windows[self.active_window].is_active = false;
-            self.active_window = (self.active_window + 1) % self.windows.len();
-            self.windows[self.active_window].is_active = true;
-            info!("Cycled to window {}", self.active_window);
-        }
-    }
-    
-    fn close_window(&mut self) -> Result<()> {
-        if self.windows.len() <= 1 {
-            // Optionally, quit if it's the last window and buffer
-            if self.buffers.len() <= 1 && self.mode != Mode::Help { // Don't quit if help is shown over last buffer
-                self.quit = true;
-                info!("Closing the last window and buffer. Quitting.");
-            } else {
-                info!("Cannot close the last window if other buffers exist or help is active.");
-            }
-            return Ok(());
-        }
-
-        self.windows.remove(self.active_window);
-
-        if self.active_window >= self.windows.len() {
-            self.active_window = self.windows.len() - 1;
-        }
-        
-        if !self.windows.is_empty() {
-            self.windows[self.active_window].is_active = true;
-        }
-
-        // Potentially close the associated buffer if it's no longer used by any window
-        // For now, we'll keep buffer management separate or simplify it.
-        // If the active buffer was associated with the closed window,
-        // and no other window uses it, we might want to close it.
-        // This part needs more sophisticated logic if buffers are tied to windows.
-        // For now, closing a window doesn't automatically close its buffer.
-        // User can use <space>x to close buffer.
-
-        info!("Closed window. Active window is now {}", self.active_window);
         Ok(())
     }
 
-    // Helper method to check for word separators
-    fn is_word_separator(c: char) -> bool {
-        c.is_whitespace() || c.is_ascii_punctuation()
+    fn move_cursor_up(&mut self) -> Result<()> {
+        if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
+            if buffer.cursor_y > 0 {
+                buffer.cursor_y -= 1;
+            }
+        }
+        Ok(())
     }
-    
-    fn draw_help_screen(&self) -> Result<()> {
-        let help_title = " RVim Keybindings ";
-        let help_content = vec![
-            "",
-            "Normal Mode:",
-            "  i             - Enter Insert Mode",
-            "  v             - Enter Visual Mode",
-            "  :             - Enter Command Mode",
-            "  h/j/k/l       - Navigate cursor",
-            "  w             - Move to next word start",
-            "  e             - Move to next word end",
-            "  b             - Move to previous word start",
-            "  q             - Quit RVim (in some contexts, e.g. single buffer)",
-            "",
-            "Space Leader Key (Normal Mode):",
-            "  <space> e     - Toggle File Tree",
-            "  <space> v     - Open Vertical Shell",
-            "  <space> h     - Open Horizontal Shell",
-            "  <space> w     - Cycle Windows",
-            "  <space> q     - Close Current Window",
-            "  <space> x     - Close Current Buffer",
-            "",
-            "Insert Mode:",
-            "  Esc           - Exit to Normal Mode",
-            "  Backspace     - Delete char before cursor",
-            "  Enter         - New line",
-            "",
-            "Command Mode:",
-            "  Esc           - Exit to Normal Mode",
-            "  Enter         - Execute command",
-            "  :w            - Save file",
-            "  :q            - Quit",
-            "  :wq           - Save and Quit",
-            "  :help         - Show this help screen",
-            "",
-            "File Tree Mode:",
-            "  Esc / q       - Close File Tree",
-            "  j / k         - Navigate up/down",
-            "  l / Enter     - Open file / Expand directory",
-            "  h             - Collapse directory / Go to parent",
-            "",
-            "Shell Mode:",
-            "  Esc           - Return to previous mode (shell process continues)",
-            "  Enter         - Send command to shell",
-            "  exit          - (Typed in RVim prompt) Close shell process & return",
-            "  Arrow Up/Down - Command history (RVim's input line)",
-            "",
-            "  Note: To exit the actual shell process, type its native exit command",
-            "        (e.g., 'exit' or 'logout') directly into the shell.",
-        ];
 
-        let popup_width = help_content.iter().map(|s| s.len()).max().unwrap_or(70).max(help_title.len()) + 4;
-        let popup_height = help_content.len() + 4;
+    fn move_cursor_down(&mut self) -> Result<()> {
+        if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
+            if buffer.cursor_y < buffer.document.lines.len().saturating_sub(1) {
+                buffer.cursor_y += 1;
+            }
+        }
+        Ok(())
+    }
 
-        let term_width = self.terminal_width;
-        let term_height = self.terminal_height.saturating_sub(2); // Account for status/message line
+    fn move_to_next_word_start(&mut self) -> Result<()> {
+        // Implementation coming soon
+        Ok(())
+    }
 
-        let start_x = (term_width.saturating_sub(popup_width)) / 2;
-        let start_y = (term_height.saturating_sub(popup_height)) / 2;
+    fn move_to_next_word_end(&mut self) -> Result<()> {
+        // Implementation coming soon
+        Ok(())
+    }
 
-        // Draw border
-        execute!(io::stdout(), SetBackgroundColor(Color::DarkGrey), SetForegroundColor(Color::White))?;
-        for y in 0..popup_height {
-            for x in 0..popup_width {
-                execute!(io::stdout(), cursor::MoveTo((start_x + x) as u16, (start_y + y) as u16))?;
-                if y == 0 || y == popup_height - 1 {
-                    if x == 0 { print!("{}", if y == 0 { "┌" } else { "└" }); }
-                    else if x == popup_width - 1 { print!("{}", if y == 0 { "┐" } else { "┘" }); }
-                    else { print!("─"); }
-                } else if x == 0 || x == popup_width - 1 {
-                    print!("│");
-                } else {
-                    print!(" "); // Fill background
+    fn move_to_prev_word_start(&mut self) -> Result<()> {
+        // Implementation coming soon
+        Ok(())
+    }
+
+    fn cycle_window(&mut self) -> Result<()> {
+        if !self.windows.is_empty() {
+            self.active_window = (self.active_window + 1) % self.windows.len();
+        }
+        Ok(())
+    }
+
+    fn close_window(&mut self) -> Result<()> {
+        if self.windows.len() > 1 {
+            self.windows.remove(self.active_window);
+            if self.active_window >= self.windows.len() {
+                self.active_window = self.windows.len() - 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn process_tab_switcher_mode(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                Ok(())
+            },
+            KeyCode::Tab => self.tab_manager.switch_to_next_tab(),
+            KeyCode::BackTab => self.tab_manager.switch_to_prev_tab(),
+            _ => Ok(())
+        }
+    }
+
+    fn process_mouse_event(&mut self, event: event::MouseEvent) -> Result<()> {
+        match event.kind {
+            event::MouseEventKind::Down(button) => {
+                // Handle mouse clicks
+                let (x, y) = (event.column as usize, event.row as usize);
+                match button {
+                    event::MouseButton::Left => self.handle_left_click(x, y)?,
+                    _ => {}
+                }
+            },
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_left_click(&mut self, x: usize, y: usize) -> Result<()> {
+        // Update cursor position based on click
+        if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
+            buffer.cursor_x = x;
+            buffer.cursor_y = y;
+        }
+        Ok(())
+    }
+
+    fn fuzzy_find_files(&mut self) -> Result<()> {
+        let input = &self.command_line[2..]; // Skip ":f "
+        self.fuzzy_results.clear();
+        
+        if let Some(tree) = &self.file_tree {
+            for entry in &tree.entries {
+                if let Some(score) = self.fuzzy_matcher.fuzzy_match(&entry.name, input) {
+                    self.fuzzy_results.push((entry.name.clone(), score));
                 }
             }
         }
         
-        // Draw title
-        let title_x = start_x + (popup_width.saturating_sub(help_title.len())) / 2;
-        execute!(io::stdout(), cursor::MoveTo(title_x as u16, start_y as u16), SetBackgroundColor(Color::Blue))?;
-        print!("{}", help_title);
-        execute!(io::stdout(), SetBackgroundColor(Color::DarkGrey))?;
-
-
-        // Draw content
-        execute!(io::stdout(), SetForegroundColor(Color::White))?;
-        for (i, line) in help_content.iter().enumerate() {
-            let line_x = start_x + 2;
-            let line_y = start_y + 2 + i;
-            if line_y < start_y + popup_height -1 { // Ensure content is within bounds
-                 execute!(io::stdout(), cursor::MoveTo(line_x as u16, line_y as u16))?;
-                 print!("{}", line);
+        self.fuzzy_results.sort_by_key(|(_, score)| -score);
+        Ok(())
+    }
+    
+    fn show_command_palette(&mut self) -> Result<()> {
+        let input = &self.command_line[1..]; // Skip ":"
+        self.fuzzy_results.clear();
+        
+        for cmd in &self.command_palette_items {
+            if let Some(score) = self.fuzzy_matcher.fuzzy_match(cmd, input) {
+                self.fuzzy_results.push((cmd.clone(), score));
             }
         }
+        
+        self.fuzzy_results.sort_by_key(|(_, score)| -score);
+        Ok(())
+    }
+    
+    fn draw_help_screen(&mut self) -> Result<()> {
+        let help_text = vec![
+            "RVim Help",
+            "=========",
+            "",
+            "Normal Mode:",
+            "  h/j/k/l - Move cursor",
+            "  i - Enter insert mode",
+            "  v - Enter visual mode",
+            "  : - Enter command mode",
+            "  q - Quit",
+            "",
+            "Leader Commands (Space):",
+            "  e - Toggle file tree",
+            "  v - Open vertical shell",
+            "  h - Open horizontal shell",
+            "  w - Cycle windows",
+            "  q - Close window",
+            "  x - Close buffer",
+            "",
+            "Press any key to close help"
+        ];
 
-        execute!(io::stdout(), ResetColor)?;
+        // Clear screen first
+        execute!(
+            io::stdout(),
+            terminal::Clear(ClearType::All),
+            cursor::MoveTo(0, 0)
+        )?;
+
+        // Calculate center position
+        let start_y = self.terminal_height.saturating_sub(help_text.len()) / 2;
+        
+        for (idx, line) in help_text.iter().enumerate() {
+            let start_x = self.terminal_width.saturating_sub(line.len()) / 2;
+            execute!(
+                io::stdout(),
+                cursor::MoveTo(start_x as u16, (start_y + idx) as u16)
+            )?;
+            print!("{}", line);
+        }
+
+        io::stdout().flush()?;
+        Ok(())
+    }
+
+    fn process_help_mode(&mut self, key: KeyEvent) -> Result<()> {
+        // Any key press exits help mode
+        self.mode = self.previous_mode;
         Ok(())
     }
 }

@@ -437,3 +437,35 @@ RVim draws inspiration from:
 - Vim and Neovim for the modal editing paradigm
 - Rust community for excellent libraries and tools
 - Lua community for the powerful, embeddable language
+
+## Advanced Features
+
+### Smart Text Editing
+- Efficient rope-based text storage with `ropey`
+- Multi-cursor editing support
+- Advanced undo/redo tree
+- Auto-indent and smart indent detection
+
+### Enhanced Syntax Highlighting
+- Tree-sitter based syntax highlighting
+- Support for multiple languages
+- Real-time parsing and highlighting
+- Custom theme support via `syntect`
+
+### Fuzzy Finding
+- Fast file fuzzy finding with `fuzzy-matcher`
+- Command palette with fuzzy search
+- Symbol search in current file
+- Project-wide symbol search
+
+### File System Integration
+- Real-time file system watching with `notify`
+- Auto-reload on external changes
+- Git integration for status and diff
+- Project-wide search and replace
+
+### Performance Optimizations
+- Parallel processing with `rayon`
+- Async I/O operations with `tokio`
+- Thread-safe data structures with `dashmap`
+- Efficient mutexes with `parking_lot`

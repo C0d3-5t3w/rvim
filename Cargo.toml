@@ -11,3 +11,17 @@ serde_json = "1.0"  # JSON support
 dirs = "5.0.1"  # Finding config directories
 log = "0.4"  # Logging
 simplelog = "0.12"  # Simple logging implementation
+
+# New dependencies
+ropey = "1.6.0"  # Efficient text editing
+tree-sitter = "0.20.10"  # Syntax parsing
+fuzzy-matcher = "0.3.7"  # Fuzzy finding
+notify = "6.1.1"  # File system events
+rayon = "1.8.0"  # Parallel processing
+syntect = "5.1.0"  # Syntax highlighting
+regex = "1.10.2"  # Regular expressions
+toml = "0.8.8"  # TOML parsing
+async-trait = "0.1.77"  # Async traits
+tokio = { version = "1.35.1", features = ["full"] }  # Async runtime
+dashmap = "5.5.3"  # Thread-safe maps
+parking_lot = "0.12.1"  # Better mutexes

@@ -67,6 +67,12 @@ rvim.map('n', '<space>w', 'cycle_window')
 rvim.map('n', '<space>q', 'close_window')
 rvim.map('n', '<space>x', 'close_buffer')
 
+-- Tab navigation
+rvim.map('n', '<space><tab>', 'next_tab')     -- Space+Tab to go to next tab
+rvim.map('n', '<space><S-tab>', 'prev_tab')   -- Space+Shift+Tab to go to previous tab
+rvim.map('n', '<C-tab>', 'next_tab')          -- Ctrl+Tab alternative
+rvim.map('n', '<C-S-tab>', 'prev_tab')        -- Ctrl+Shift+Tab alternative
+
 -- LSP keybindings
 vim.keymap.set('n', 'gd', vim.lsp.buf.definition, { desc = "Go to definition" })
 vim.keymap.set('n', 'K', vim.lsp.buf.hover, { desc = "Show hover information" })
