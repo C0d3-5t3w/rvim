@@ -1,0 +1,13 @@
+[package]
+name = "rvim"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crossterm = "0.27.0"  # Terminal handling
+mlua = { version = "0.9.1", features = ["lua54", "vendored"] }  # Lua integration
+serde = { version = "1.0", features = ["derive"] }  # Serialization
+serde_json = "1.0"  # JSON support
+dirs = "5.0.1"  # Finding config directories
+log = "0.4"  # Logging
+simplelog = "0.12"  # Simple logging implementation
