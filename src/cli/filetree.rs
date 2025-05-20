@@ -120,25 +120,138 @@ impl FileTree {
             self.cursor += 1;
         }
     }
-
-    pub fn toggle_expand(&mut self) -> Result<(), Box<dyn Error>> {
-        if self.entries.is_empty() {
-            return Ok(());
+    
+    pub fn is_directory_expanded(&self, path: PathBuf) -> bool {
+        for entry in &self.entries {
+            if entry.path == path && entry.is_dir {
+                return entry.is_expanded;
+            }
         }
-
-        let cursor = self.cursor;
-        if self.entries[cursor].is_dir {
-            // Toggle expansion
-            let is_expanded = self.entries[cursor].is_expanded;
-            self.entries[cursor].is_expanded = !is_expanded;
+        false
+    }
+    
+    pub fn move_to_parent(&mut self) -> Result<(), Box<dyn Error>> {
+        if self.cursor < self.entries.len() {
+            let current_entry = &self.entries[self.cursor];
             
-            // Reload the tree to show expanded directories
-            self.refresh()?;
+            // If it's already at level 0, can't go to parent
+            if current_entry.level == 0 {
+                return Ok(());
+            }
+            
+            // Find the parent entry (entry with level = current level - 1)
+            let target_level = current_entry.level - 1;
+            let mut parent_idx = self.cursor;
+            
+            // Go backwards to find the parent
+            while parent_idx > 0 {
+                parent_idx -= 1;
+                if self.entries[parent_idx].level == target_level {
+                    // Found parent, move cursor to it
+                    self.cursor = parent_idx;
+                    break;
+                }
+            }
         }
         
         Ok(())
     }
-
+    
+    pub fn toggle_expand(&mut self) -> Result<(), Box<dyn Error>> {
+        if self.entries.is_empty() || self.cursor >= self.entries.len() {
+            return Ok(());
+        }
+        
+        if self.entries[self.cursor].is_dir {
+            let path = self.entries[self.cursor].path.clone();
+            let current_level = self.entries[self.cursor].level;
+            
+            // Toggle expanded state
+            self.entries[self.cursor].is_expanded = !self.entries[self.cursor].is_expanded;
+            
+            if self.entries[self.cursor].is_expanded {
+                // If now expanded, load subdirectories and files
+                let mut new_entries = Vec::new();
+                self.load_directory_entries(&path, current_level + 1, &mut new_entries)?;
+                
+                // Insert the new entries after the current entry
+                if !new_entries.is_empty() {
+                    let insert_position = self.cursor + 1;
+                    for (i, entry) in new_entries.into_iter().enumerate() {
+                        self.entries.insert(insert_position + i, entry);
+                    }
+                }
+            } else {
+                // If now collapsed, remove all entries that are children of this directory
+                let cursor_idx = self.cursor;
+                
+                // Define a closure to check if an entry is a child of current dir
+                let mut remove_indices = Vec::new();
+                for i in (cursor_idx + 1)..self.entries.len() {
+                    if self.entries[i].level > current_level {
+                        remove_indices.push(i);
+                    } else {
+                        break; // Stop when we reach an entry at the same or higher level
+                    }
+                }
+                
+                // Remove entries in reverse order to maintain correct indices
+                for idx in remove_indices.into_iter().rev() {
+                    self.entries.remove(idx);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    fn load_directory_entries(&self, dir: &Path, level: usize, entries: &mut Vec<FileTreeEntry>) -> Result<(), Box<dyn Error>> {
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+        
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            
+            // Skip hidden files/directories (optional)
+            if name.starts_with('.') && name != ".." && name != "." {
+                continue;
+            }
+            
+            let is_dir = path.is_dir();
+            if is_dir {
+                dirs.push(FileTreeEntry {
+                    name,
+                    path,
+                    is_dir,
+                    is_expanded: false,
+                    level,
+                    children: vec![],
+                });
+            } else {
+                files.push(FileTreeEntry {
+                    name,
+                    path,
+                    is_dir,
+                    is_expanded: false,
+                    level,
+                    children: vec![],
+                });
+            }
+        }
+        
+        // Sort alphabetically
+        dirs.sort_by(|a, b| a.name.cmp(&b.name));
+        files.sort_by(|a, b| a.name.cmp(&b.name));
+        
+        // Add directories first, then files
+        entries.extend(dirs);
+        entries.extend(files);
+        
+        Ok(())
+    }
+    
     pub fn get_selected_path(&self) -> Option<PathBuf> {
         if self.entries.is_empty() {
             return None;

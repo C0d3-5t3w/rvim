@@ -19,7 +19,7 @@ release:
 install:
 	@echo "Installing RVim..."
 	@mkdir -p $(HOME)/.config/rvim
-	@cp -r config.lua $(HOME)/.config/rvim/
+	@cp -r config/config.lua $(HOME)/.config/rvim/
 	@echo "Config files installed to ~/.config/rvim/"
 	@sudo cp target/debug/rvim /usr/local/bin/
 	@echo "RVim binary installed to /usr/local/bin/"
