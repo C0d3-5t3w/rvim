@@ -1,6 +1,6 @@
 use crate::cli::shell::Shell;
 use crate::error::{Error, Result};
-use crate::lsp;  // Add LSP module import
+use crate::lsp::{self, get_language_id_from_extension, get_language};  // Add explicit imports
 use ropey::Rope;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -71,12 +71,12 @@ impl Buffer {
             language: None,
         }
     }
-    
+
     pub fn from_file(filename: &str) -> Result<Self> {
         let content = fs::read_to_string(filename)
             .map_err(|e| Error::Io(e))?;
-            
-        let parser = TsParser::new();
+
+        let mut parser = TsParser::new();
         let mut buffer = Self {
             document: Document::from_file(filename)?,
             cursor_x: 0,
@@ -92,17 +92,20 @@ impl Buffer {
         };
 
         // Initialize language if available
-        if let Some(lang_id) = lsp::get_language_id_from_extension(
-            Path::new(filename)
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .unwrap_or("")
-        ) {
-            if let Some(lang) = lsp::get_language(lang_id) {
-                buffer.set_language(lang)?;
+        let ext = Path::new(filename)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("");
+
+        if let Some(lang_id) = get_language_id_from_extension(ext) {
+            if let Some(lang) = get_language(lang_id) {
+                let mut new_parser = TsParser::new();
+                new_parser.set_language(lang)?;
+                buffer.parser = Some(Arc::new(new_parser));
+                buffer.language = Some(lang);
             }
         }
-        
+
         Ok(buffer)
     }
 
@@ -130,11 +133,12 @@ impl Buffer {
     }
     
     pub fn set_language(&mut self, lang: Language) -> Result<()> {
-        if let Some(parser) = &mut self.parser {
-            parser.set_language(lang)?;
-            self.language = Some(lang);
-            self.update_syntax_tree()?;
-        }
+        // Create a new parser since we can't modify through Arc
+        let mut new_parser = TsParser::new();
+        new_parser.set_language(lang)?;
+        self.parser = Some(Arc::new(new_parser));
+        self.language = Some(lang);
+        self.update_syntax_tree()?;
         Ok(())
     }
     
@@ -169,20 +173,6 @@ impl Document {
         let content = fs::read_to_string(filename)
             .map_err(|e| Error::Io(e))?;
             
-        let parser = TsParser::new().map(Arc::new);
-        
-        if let Some(lang_id) = get_language_id_from_extension(
-            Path::new(filename)
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .unwrap_or("")
-        ) {
-            // Convert language errors to RVim errors
-            if let Err(e) = parser.as_ref().unwrap().set_language(get_language(lang_id)) {
-                return Err(Error::Message(format!("Language error: {}", e)));
-            }
-        }
-        
         Ok(Self {
             rope: Rope::from_str(&content),
             lines: content.lines().map(String::from).collect(),

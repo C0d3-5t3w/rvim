@@ -9,7 +9,6 @@ use log::{info, error, warn};
 use crate::error::{Error, Result};
 use tree_sitter::Language;
 
-/// Map file extensions to language IDs
 pub fn get_language_id_from_extension(ext: &str) -> Option<&'static str> {
     match ext.to_lowercase().as_str() {
         "rs" => Some("rust"),
@@ -338,10 +337,10 @@ impl Drop for LspManager {
 /// This is a placeholder - you'll need to implement proper language loading
 pub fn get_language(lang_id: &str) -> Option<Language> {
     match lang_id {
-        "rust" => tree_sitter_rust::language(),
-        "javascript" => tree_sitter_javascript::language(),
-        "python" => tree_sitter_python::language(),
-        "lua" => tree_sitter_lua::language(),
-        _ => None,
+        "rust"       => Some(tree_sitter_rust::language()),
+        "javascript" => Some(tree_sitter_javascript::language()),
+        "python"     => Some(tree_sitter_python::language()),
+        "lua"        => Some(tree_sitter_lua::language()),
+        _            => None,
     }
 }

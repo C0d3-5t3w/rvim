@@ -983,10 +983,22 @@ impl Editor {
                 self.mode = Mode::Normal;
                 Ok(())
             },
-            KeyCode::Char('h') => self.move_cursor_left()?,
-            KeyCode::Char('j') => self.move_cursor_down()?,
-            KeyCode::Char('k') => self.move_cursor_up()?,
-            KeyCode::Char('l') => self.move_cursor_right()?,
+            KeyCode::Char('h') => {
+                self.move_cursor_left()?;
+                Ok(())
+            },
+            KeyCode::Char('j') => {
+                self.move_cursor_down()?;
+                Ok(())
+            },
+            KeyCode::Char('k') => {
+                self.move_cursor_up()?;
+                Ok(())
+            },
+            KeyCode::Char('l') => {
+                self.move_cursor_right()?;
+                Ok(())
+            },
             _ => Ok(())
         }
     }

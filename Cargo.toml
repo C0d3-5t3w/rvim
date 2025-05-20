@@ -15,6 +15,10 @@ simplelog = "0.12"  # Simple logging implementation
 # New dependencies
 ropey = "1.6.0"  # Efficient text editing
 tree-sitter = "0.20.10"  # Syntax parsing
+tree-sitter-rust = "0.20.3"
+tree-sitter-javascript = "0.20.0"
+tree-sitter-python = "0.20.2"
+tree-sitter-lua = "0.0.18"
 fuzzy-matcher = "0.3.7"  # Fuzzy finding
 notify = "6.1.1"  # File system events
 rayon = "1.8.0"  # Parallel processing
