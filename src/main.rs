@@ -9,6 +9,7 @@ use std::fs::File;
 use log::info;
 
 mod cli;
+mod lsp;
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialize logging
@@ -23,8 +24,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Load configuration
     let config_path = get_config_path()?;
     
+    // Initialize plugin manager
+    let mut plugin_manager = cli::plugin::PluginManager::new(&config_path);
+    plugin_manager.discover_plugins()?;
+    
     // Initialize and run the editor
     let mut editor = cli::editor::Editor::new(config_path)?;
+    
+    // Set up plugin manager in the editor
+    editor.set_plugin_manager(plugin_manager)?;
     
     if let Some(file) = filename {
         editor.open_file(file)?;

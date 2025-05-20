@@ -28,6 +28,7 @@ enum Mode {
     Command,
     FileTree,
     Shell,
+    Help, // Added Help mode
 }
 
 // Buffer represents a single open file or shell
@@ -345,6 +346,33 @@ impl Editor {
         Ok(())
     }
     
+    pub fn set_plugin_manager(&mut self, plugin_manager: crate::cli::plugin::PluginManager) -> Result<(), Box<dyn Error>> {
+        // Register the plugin manager's Lua functions
+        let plugin_table = self.lua.create_table()?;
+        
+        // Add function to get installed plugins
+        let get_plugins_fn = self.lua.create_function(|_, ()| {
+            Ok("List of installed plugins")
+        })?;
+        plugin_table.set("get_plugins", get_plugins_fn)?;
+        
+        // Add function to install a plugin
+        let install_plugin_fn = self.lua.create_function(move |_, plugin_url: String| {
+            info!("Installing plugin: {}", plugin_url);
+            // In a real implementation, this would call plugin_manager.install_plugin(...)
+            Ok(())
+        })?;
+        plugin_table.set("install", install_plugin_fn)?;
+        
+        // Set the plugins table in the global rvim table
+        let globals = self.lua.globals();
+        let rvim_table: mlua::Table = globals.get("rvim")?;
+        rvim_table.set("plugins", plugin_table)?;
+        
+        info!("Plugin manager initialized");
+        Ok(())
+    }
+    
     pub fn run(&mut self) -> Result<(), Box<dyn Error>> {
         self.refresh_screen()?;
         
@@ -366,36 +394,55 @@ impl Editor {
     }
     
     fn refresh_screen(&mut self) -> Result<(), Box<dyn Error>> {
+        // Poll shell output if in shell mode and buffer exists
+        if self.mode == Mode::Shell {
+            if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
+                if let Some(shell) = buffer.shell.as_mut() {
+                    shell.poll_output();
+                    if !shell.running { // If shell terminated, switch mode
+                        self.mode = self.previous_mode;
+                        // Consider closing the shell buffer or marking it as non-interactive
+                        // For now, just switch mode. The buffer remains.
+                        info!("Shell terminated, switching to mode: {:?}", self.mode);
+                    }
+                }
+            }
+        }
+
         execute!(
             io::stdout(),
             terminal::Clear(ClearType::All),
             cursor::MoveTo(0, 0)
         )?;
-        
-        // Draw the file tree if visible
-        let filetree_offset = if let Some(tree) = &self.file_tree {
-            if tree.visible {
-                self.draw_file_tree()?;
-                tree.width + 1
+
+        if self.mode == Mode::Help {
+            self.draw_help_screen()?;
+        } else {
+            // Draw the file tree if visible
+            let filetree_offset = if let Some(tree) = &self.file_tree {
+                if tree.visible {
+                    self.draw_file_tree()?;
+                    tree.width + 1
+                } else {
+                    0
+                }
             } else {
                 0
-            }
-        } else {
-            0
-        };
-        
-        // Draw each window
-        for (idx, window) in self.windows.iter().enumerate() {
-            // Adjust for file tree
-            let adjusted_x = window.x + filetree_offset;
+            };
             
-            // Draw window borders if there are multiple windows
-            if self.windows.len() > 1 {
-                self.draw_window_borders(window, adjusted_x, idx == self.active_window)?;
+            // Draw each window
+            for (idx, window) in self.windows.iter().enumerate() {
+                // Adjust for file tree
+                let adjusted_x = window.x + filetree_offset;
+                
+                // Draw window borders if there are multiple windows
+                if self.windows.len() > 1 {
+                    self.draw_window_borders(window, adjusted_x, idx == self.active_window)?;
+                }
+                
+                // Draw window content
+                self.draw_window_content(window, adjusted_x)?;
             }
-            
-            // Draw window content
-            self.draw_window_content(window, adjusted_x)?;
         }
         
         self.draw_status_line()?;
@@ -403,38 +450,56 @@ impl Editor {
         
         // Position cursor based on mode
         match self.mode {
+            Mode::Help => {
+                // Hide cursor or move to a non-obtrusive place for help screen
+                execute!(io::stdout(), cursor::Hide)?;
+            }
             Mode::FileTree => {
+                execute!(io::stdout(), cursor::Show)?;
                 if let Some(tree) = &self.file_tree {
                     let tree_cursor_y = tree.cursor.min(self.terminal_height - 3);
                     execute!(io::stdout(), cursor::MoveTo(2, tree_cursor_y as u16))?;
                 }
             },
             Mode::Shell => {
-                if let Some(buffer) = self.buffers.get(self.active_buffer) {
-                    if let Some(shell) = &buffer.shell {
-                        let content_y = if self.windows.len() > 1 { 
-                            self.windows[self.active_window].y + 1 
-                        } else { 
-                            0 
-                        };
-                        
-                        let filetree_width = if let Some(tree) = &self.file_tree { 
-                            if tree.visible { tree.width + 1 } else { 0 } 
-                        } else { 0 };
-                        
-                        let content_x = if self.windows.len() > 1 { 
-                            self.windows[self.active_window].x + filetree_width + 1 
-                        } else { 
-                            filetree_width 
-                        };
-                        
-                        let shell_lines_count = shell.lines.len();
-                        let cursor_pos = shell.cursor_pos + 2; // + 2 for "$ " prefix
-                        
-                        execute!(io::stdout(), cursor::MoveTo(
-                            (content_x + cursor_pos) as u16, 
-                            (content_y + shell_lines_count) as u16
-                        ))?;
+                if let Some(buffer) = self.buffers.get_mut(self.active_buffer) { 
+                    if let Some(shell) = buffer.shell.as_mut() { 
+                        shell.poll_output(); 
+                        if !shell.running && self.mode == Mode::Shell { 
+                             self.mode = self.previous_mode;
+                        } else if self.mode == Mode::Shell { 
+                            let window = &self.windows[self.active_window];
+                            let effective_height = if self.windows.len() > 1 { window.height - 2 } else { window.height };
+
+                            let content_y_start = if self.windows.len() > 1 { 
+                                window.y + 1 
+                            } else { 
+                                0 
+                            };
+                            
+                            let filetree_width = if let Some(tree) = &self.file_tree { 
+                                if tree.visible { tree.width + 1 } else { 0 } 
+                            } else { 0 };
+                            
+                            let content_x_start = if self.windows.len() > 1 { 
+                                window.x + filetree_width + 1 
+                            } else { 
+                                filetree_width 
+                            };
+                            
+                            // Calculate the Y position for RVim's input line.
+                            // This is the number of output lines from the shell that will actually be displayed.
+                            let displayed_output_lines_count = shell.lines.len().min(effective_height.saturating_sub(1));
+                            let rvim_input_line_screen_y = content_y_start + displayed_output_lines_count;
+                            
+                            // Cursor position for RVim's input_line
+                            let rvim_input_cursor_screen_x = content_x_start + shell.cursor_pos + 2; // +2 for "$ " visual prefix
+                            
+                            execute!(io::stdout(), cursor::MoveTo(
+                                rvim_input_cursor_screen_x as u16, 
+                                rvim_input_line_screen_y as u16
+                            ))?;
+                        }
                     }
                 }
             },
@@ -606,32 +671,36 @@ impl Editor {
         
         if buffer.is_shell {
             // Draw shell content
-            if let Some(shell) = &buffer.shell {
+            if let Some(shell) = &buffer.shell { // No mut needed for drawing
                 let mut line_counter = 0;
-                for (idx, line) in shell.lines.iter().enumerate() {
-                    if line_counter >= effective_height {
+                // Display previous lines from the shell's actual output
+                // Consider viewport scrolling for shell.lines here
+                let start_line_idx = shell.lines.len().saturating_sub(effective_height.saturating_sub(1)); // Show last lines, leave one for input
+
+                for (idx, line_content) in shell.lines.iter().skip(start_line_idx).enumerate() {
+                    if line_counter >= effective_height -1 { // Reserve last line for input
                         break;
                     }
-                    
                     execute!(io::stdout(), cursor::MoveTo(content_x as u16, (content_y + line_counter) as u16))?;
-                    
-                    if line.len() > effective_width {
-                        print!("{}", &line[0..effective_width]);
+                    let display_line = if line_content.len() > effective_width {
+                        &line_content[0..effective_width]
                     } else {
-                        print!("{}", line);
-                    }
-                    
+                        line_content
+                    };
+                    print!("{}", display_line);
                     line_counter += 1;
                 }
                 
-                // Draw the current input line
+                // Draw RVim's current input line with a visual prompt
                 if line_counter < effective_height {
                     execute!(io::stdout(), cursor::MoveTo(content_x as u16, (content_y + line_counter) as u16))?;
-                    if 2 + shell.input_line.len() > effective_width {
-                        print!("$ {}", &shell.input_line[0..effective_width-2]);
+                    let prompt_and_input = format!("$ {}", shell.input_line); // RVim's visual prompt
+                    let display_prompt_input = if prompt_and_input.len() > effective_width {
+                        &prompt_and_input[0..effective_width]
                     } else {
-                        print!("$ {}", shell.input_line);
-                    }
+                        &prompt_and_input
+                    };
+                    print!("{}", display_prompt_input);
                 }
             }
         } else {
@@ -671,6 +740,7 @@ impl Editor {
             Mode::Command => " COMMAND ",
             Mode::FileTree => " FILE TREE ",
             Mode::Shell => " SHELL ",
+            Mode::Help => " HELP ", // Added Help status
         };
         
         // Get buffer info
@@ -729,6 +799,10 @@ impl Editor {
         
         if let Mode::Command = self.mode {
             print!(":{}", self.command_line);
+        } else if self.mode == Mode::Help {
+            let help_msg = "Press any key to close help.";
+            let padding = self.terminal_width.saturating_sub(help_msg.len()) / 2;
+            print!("{}{}", " ".repeat(padding), help_msg);
         }
         
         Ok(())
@@ -780,18 +854,28 @@ impl Editor {
         let buffer = &mut self.buffers[self.active_buffer];
         
         if !buffer.is_shell || buffer.shell.is_none() {
-            self.mode = Mode::Normal;
+            self.mode = self.previous_mode; 
             return Ok(());
         }
         
         let shell = buffer.shell.as_mut().unwrap();
+        shell.poll_output(); // Poll output before processing key
+
+        if !shell.running {
+            self.mode = self.previous_mode;
+            info!("Shell is not running. Switching to mode: {:?}", self.mode);
+            // Optionally close the buffer or mark as non-interactive
+            // For now, if the user tries to type into a dead shell, they'll just switch out.
+            return Ok(());
+        }
         
         match key.code {
             KeyCode::Esc => {
-                self.mode = Mode::Normal;
+                self.mode = self.previous_mode; // Revert to previous mode
             },
             KeyCode::Enter => {
-                shell.execute_command()?;
+                shell.execute_command()?; // This now sends to the child shell
+                // poll_output will be called at the start of the next refresh_screen or keypress
             },
             KeyCode::Char(c) => {
                 shell.input_char(c);
@@ -836,6 +920,7 @@ impl Editor {
                     Mode::Command => self.process_command_mode(key_event)?,
                     Mode::FileTree => self.process_file_tree_mode(key_event)?,
                     Mode::Shell => self.process_shell_mode(key_event)?,
+                    Mode::Help => self.process_help_mode(key_event)?, // Added help mode processing
                 }
             },
             Event::Mouse(mouse_event) => {
@@ -891,7 +976,11 @@ impl Editor {
             KeyCode::Esc => self.mode = Mode::Normal,
             KeyCode::Enter => {
                 self.execute_command()?;
-                self.mode = Mode::Normal;
+                // execute_command might change the mode (e.g. to Help)
+                // so only switch to Normal if not already changed.
+                if self.mode == Mode::Command {
+                    self.mode = Mode::Normal;
+                }
             },
             KeyCode::Backspace => {
                 self.command_line.pop();
@@ -908,7 +997,7 @@ impl Editor {
     fn process_file_tree_mode(&mut self, key: KeyEvent) -> Result<(), Box<dyn Error>> {
         if let Some(tree) = &mut self.file_tree {
             match key.code {
-                KeyCode::Esc => {
+                KeyCode::Esc | KeyCode::Char('q') => { // Added 'q' to close file tree
                     tree.toggle_visible();
                     self.mode = self.previous_mode;
                 },
@@ -1020,7 +1109,23 @@ impl Editor {
         Ok(())
     }
     
+    fn process_help_mode(&mut self, _key: KeyEvent) -> Result<(), Box<dyn Error>> {
+        // Any key closes help
+        self.mode = Mode::Normal;
+        execute!(io::stdout(), cursor::Show)?; // Ensure cursor is shown when leaving help
+        Ok(())
+    }
+    
     fn process_mouse_event(&mut self, event: event::MouseEvent) -> Result<(), Box<dyn Error>> {
+        // Disable mouse events when help is active
+        if self.mode == Mode::Help {
+            if let event::MouseEventKind::Down(_) = event.kind {
+                self.mode = Mode::Normal; // Close help on mouse click
+                execute!(io::stdout(), cursor::Show)?;
+            }
+            return Ok(());
+        }
+
         match event.kind {
             event::MouseEventKind::Down(event::MouseButton::Left) => {
                 // Handle mouse click for positioning cursor or selecting window
@@ -1177,6 +1282,11 @@ impl Editor {
                 } else {
                     self.quit = true;
                 }
+            },
+            "help" => {
+                self.previous_mode = self.mode; // Store current mode before switching to Help
+                self.mode = Mode::Help;
+                self.command_line.clear(); // Clear command line for help screen
             },
             _ => {
                 self.command_line = format!("Unknown command: {}", self.command_line);
@@ -1397,54 +1507,25 @@ impl Editor {
             }
         }
         
-        // If no word found in current line, move to previous line
-        if !found && buffer.cursor_y > 0 {
-            buffer.cursor_y -= 1;
-            
-            let prev_line = &buffer.document.lines[buffer.cursor_y];
-            if prev_line.is_empty() {
-                buffer.cursor_x = 0;
-            } else {
-                buffer.cursor_x = prev_line.len();
-                
-                // Find the last word in the previous line
-                for i in (0..prev_line.len()).rev() {
-                    if !Editor::is_word_separator(prev_line.chars().nth(i).unwrap_or(' ')) {
-                        // Found a word character, now go to its start
-                        let mut pos = i;
-                        while pos > 0 && !Editor::is_word_separator(prev_line.chars().nth(pos - 1).unwrap_or(' ')) {
-                            pos -= 1;
-                        }
-                        buffer.cursor_x = pos;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    
-    // Helper method to check for word separators
-    fn is_word_separator(c: char) -> bool {
-        c.is_whitespace() || c.is_ascii_punctuation()
     }
 
-    // Window management methods
     fn cycle_window(&mut self) {
         if self.windows.len() > 1 {
             self.windows[self.active_window].is_active = false;
             self.active_window = (self.active_window + 1) % self.windows.len();
             self.windows[self.active_window].is_active = true;
+            info!("Cycled to window {}", self.active_window);
         }
     }
-
+    
     fn close_window(&mut self) -> Result<(), Box<dyn Error>> {
         if self.windows.len() <= 1 {
             // Optionally, quit if it's the last window and buffer
-            if self.buffers.len() <= 1 {
+            if self.buffers.len() <= 1 && self.mode != Mode::Help { // Don't quit if help is shown over last buffer
                 self.quit = true;
                 info!("Closing the last window and buffer. Quitting.");
             } else {
-                info!("Cannot close the last window if other buffers exist.");
+                info!("Cannot close the last window if other buffers exist or help is active.");
             }
             return Ok(());
         }
@@ -1468,6 +1549,110 @@ impl Editor {
         // User can use <space>x to close buffer.
 
         info!("Closed window. Active window is now {}", self.active_window);
+        Ok(())
+    }
+
+    // Helper method to check for word separators
+    fn is_word_separator(c: char) -> bool {
+        c.is_whitespace() || c.is_ascii_punctuation()
+    }
+    
+    fn draw_help_screen(&self) -> Result<(), Box<dyn Error>> {
+        let help_title = " RVim Keybindings ";
+        let help_content = vec![
+            "",
+            "Normal Mode:",
+            "  i             - Enter Insert Mode",
+            "  v             - Enter Visual Mode",
+            "  :             - Enter Command Mode",
+            "  h/j/k/l       - Navigate cursor",
+            "  w             - Move to next word start",
+            "  e             - Move to next word end",
+            "  b             - Move to previous word start",
+            "  q             - Quit RVim (in some contexts, e.g. single buffer)",
+            "",
+            "Space Leader Key (Normal Mode):",
+            "  <space> e     - Toggle File Tree",
+            "  <space> v     - Open Vertical Shell",
+            "  <space> h     - Open Horizontal Shell",
+            "  <space> w     - Cycle Windows",
+            "  <space> q     - Close Current Window",
+            "  <space> x     - Close Current Buffer",
+            "",
+            "Insert Mode:",
+            "  Esc           - Exit to Normal Mode",
+            "  Backspace     - Delete char before cursor",
+            "  Enter         - New line",
+            "",
+            "Command Mode:",
+            "  Esc           - Exit to Normal Mode",
+            "  Enter         - Execute command",
+            "  :w            - Save file",
+            "  :q            - Quit",
+            "  :wq           - Save and Quit",
+            "  :help         - Show this help screen",
+            "",
+            "File Tree Mode:",
+            "  Esc / q       - Close File Tree",
+            "  j / k         - Navigate up/down",
+            "  l / Enter     - Open file / Expand directory",
+            "  h             - Collapse directory / Go to parent",
+            "",
+            "Shell Mode:",
+            "  Esc           - Return to previous mode (shell process continues)",
+            "  Enter         - Send command to shell",
+            "  exit          - (Typed in RVim prompt) Close shell process & return",
+            "  Arrow Up/Down - Command history (RVim's input line)",
+            "",
+            "  Note: To exit the actual shell process, type its native exit command",
+            "        (e.g., 'exit' or 'logout') directly into the shell.",
+        ];
+
+        let popup_width = help_content.iter().map(|s| s.len()).max().unwrap_or(70).max(help_title.len()) + 4;
+        let popup_height = help_content.len() + 4;
+
+        let term_width = self.terminal_width;
+        let term_height = self.terminal_height.saturating_sub(2); // Account for status/message line
+
+        let start_x = (term_width.saturating_sub(popup_width)) / 2;
+        let start_y = (term_height.saturating_sub(popup_height)) / 2;
+
+        // Draw border
+        execute!(io::stdout(), SetBackgroundColor(Color::DarkGrey), SetForegroundColor(Color::White))?;
+        for y in 0..popup_height {
+            for x in 0..popup_width {
+                execute!(io::stdout(), cursor::MoveTo((start_x + x) as u16, (start_y + y) as u16))?;
+                if y == 0 || y == popup_height - 1 {
+                    if x == 0 { print!("{}", if y == 0 { "┌" } else { "└" }); }
+                    else if x == popup_width - 1 { print!("{}", if y == 0 { "┐" } else { "┘" }); }
+                    else { print!("─"); }
+                } else if x == 0 || x == popup_width - 1 {
+                    print!("│");
+                } else {
+                    print!(" "); // Fill background
+                }
+            }
+        }
+        
+        // Draw title
+        let title_x = start_x + (popup_width.saturating_sub(help_title.len())) / 2;
+        execute!(io::stdout(), cursor::MoveTo(title_x as u16, start_y as u16), SetBackgroundColor(Color::Blue))?;
+        print!("{}", help_title);
+        execute!(io::stdout(), SetBackgroundColor(Color::DarkGrey))?;
+
+
+        // Draw content
+        execute!(io::stdout(), SetForegroundColor(Color::White))?;
+        for (i, line) in help_content.iter().enumerate() {
+            let line_x = start_x + 2;
+            let line_y = start_y + 2 + i;
+            if line_y < start_y + popup_height -1 { // Ensure content is within bounds
+                 execute!(io::stdout(), cursor::MoveTo(line_x as u16, line_y as u16))?;
+                 print!("{}", line);
+            }
+        }
+
+        execute!(io::stdout(), ResetColor)?;
         Ok(())
     }
 }
