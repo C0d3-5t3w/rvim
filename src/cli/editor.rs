@@ -720,7 +720,7 @@ impl Editor {
                 
                 if file_row >= buffer.document.lines.len() {
                     if y == window.height / 3 && buffer.document.lines.len() == 1 && buffer.document.lines[0].is_empty() {
-                        let welcome = format!("RVim - Version 0.1.0\nCreated by C0d3-5t3w");
+                        let welcome = format!("RVim - Version 0.1.0\n\nCreated by C0d3-5t3w");
                         let padding = (effective_width - welcome.len()) / 2;
                         print!("~{}{}", " ".repeat(padding.saturating_sub(1)), welcome);
                     } else {
