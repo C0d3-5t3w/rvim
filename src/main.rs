@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use simplelog::*;
 use std::fs::File;
 use log::info;
+use std::error::Error as StdError;
 
 mod cli;
 mod lsp;
@@ -14,8 +15,8 @@ mod error;
 use error::{Error, Result};
 
 fn main() -> Result<()> {
-    // Initialize logging
-    let log_file = File::create("rvim.log")?;
+    // Initialize logging - simplify error conversion
+    let log_file = File::create("rvim.log").map_err(Error::from)?;
     CombinedLogger::init(vec![
         WriteLogger::new(LevelFilter::Info, Config::default(), log_file),
     ])?;

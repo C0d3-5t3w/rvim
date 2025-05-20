@@ -133,9 +133,15 @@ impl From<io::Error> for Error {
 
 impl<E> From<Box<E>> for Error 
 where 
-    E: std::error::Error + Send + Sync + 'static 
+    E: StdError + Send + Sync + 'static 
 {
     fn from(err: Box<E>) -> Self {
+        Error::Other(err)
+    }
+}
+
+impl From<Box<dyn StdError + Send + Sync>> for Error {
+    fn from(err: Box<dyn StdError + Send + Sync>) -> Self {
         Error::Other(err)
     }
 }

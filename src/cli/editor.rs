@@ -18,6 +18,7 @@ use std::env;
 use crate::cli::filetree::FileTree;
 use crate::cli::window::{Window, SplitType};
 use crate::cli::shell::Shell;
+use crate::error::{Error, Result};
 
 // Editor modes
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -57,7 +58,7 @@ impl Buffer {
         }
     }
 
-    fn from_file(filename: &str) -> Result<Self, crate::error::Error> {
+    fn from_file(filename: &str) -> Result<Self> {
         let document = Document::from_file(filename)?;
         Ok(Self {
             document,
@@ -84,7 +85,7 @@ impl Buffer {
         }
     }
 
-    fn save(&mut self) -> Result<(), crate::error::Error> {
+    fn save(&mut self) -> Result<()> {
         if self.is_shell {
             return Err(crate::error::Error::Message("Cannot save shell buffer".into()));
         }
@@ -108,7 +109,7 @@ impl Document {
         }
     }
 
-    fn from_file(filename: &str) -> Result<Self, crate::error::Error> {
+    fn from_file(filename: &str) -> Result<Self> {
         let content = fs::read_to_string(filename)
             .map_err(|e| crate::error::Error::Io(e))?;
         let lines: Vec<String> = content.lines().map(String::from).collect();
@@ -121,7 +122,7 @@ impl Document {
         })
     }
 
-    fn save(&mut self) -> Result<(), crate::error::Error> {
+    fn save(&mut self) -> Result<()> {
         if let Some(filename) = &self.filename {
             let content = self.lines.join("\n");
             fs::write(filename, content)
@@ -186,7 +187,7 @@ pub struct Editor {
 }
 
 impl Editor {
-    pub fn new(config_path: PathBuf) -> Result<Self, Box<dyn StdError>> {
+    pub fn new(config_path: PathBuf) -> Result<Self> {
         // Initialize terminal
         terminal::enable_raw_mode()?;
         execute!(
@@ -238,7 +239,7 @@ impl Editor {
         Ok(editor)
     }
     
-    pub fn open_file(&mut self, filename: &str) -> Result<(), Box<dyn StdError>> {
+    pub fn open_file(&mut self, filename: &str) -> Result<()> {
         let buffer = Buffer::from_file(filename)?;
         
         // Replace the current buffer with the new one
@@ -263,7 +264,7 @@ impl Editor {
         Ok(())
     }
     
-    fn open_shell(&mut self, is_horizontal: bool) -> Result<(), Box<dyn StdError>> {
+    fn open_shell(&mut self, is_horizontal: bool) -> Result<()> {
         let shell_buffer = Buffer::from_shell(is_horizontal);
         
         // Add the new shell buffer
@@ -281,7 +282,7 @@ impl Editor {
         Ok(())
     }
     
-    fn close_current_buffer(&mut self) -> Result<(), Box<dyn StdError>> {
+    fn close_current_buffer(&mut self) -> Result<()> {
         if self.buffers.len() <= 1 {
             info!("Cannot close the last buffer");
             return Ok(());
@@ -300,7 +301,7 @@ impl Editor {
         Ok(())
     }
     
-    fn load_config(&mut self) -> Result<(), Box<dyn StdError>> {
+    fn load_config(&mut self) -> Result<()> {
         let config_file = self.config_path.join("config.lua");
         
         // Register API functions
@@ -318,7 +319,7 @@ impl Editor {
         Ok(())
     }
     
-    fn register_api(&mut self) -> Result<(), Box<dyn StdError>> {
+    fn register_api(&mut self) -> Result<()> {
         // Create a global 'rvim' table
         let rvim_table = self.lua.create_table()?;
         
@@ -348,7 +349,7 @@ impl Editor {
         Ok(())
     }
     
-    pub fn set_plugin_manager(&mut self, plugin_manager: crate::cli::plugin::PluginManager) -> Result<(), Box<dyn StdError>> {
+    pub fn set_plugin_manager(&mut self, plugin_manager: crate::cli::plugin::PluginManager) -> Result<()> {
         // Register the plugin manager's Lua functions
         let plugin_table = self.lua.create_table()?;
         
@@ -375,7 +376,7 @@ impl Editor {
         Ok(())
     }
     
-    pub fn run(&mut self) -> Result<(), Box<dyn StdError>> {
+    pub fn run(&mut self) -> Result<()> {
         self.refresh_screen()?;
         
         while !self.quit {
@@ -395,7 +396,7 @@ impl Editor {
         Ok(())
     }
     
-    fn refresh_screen(&mut self) -> Result<(), Box<dyn StdError>> {
+    fn refresh_screen(&mut self) -> Result<()> {
         // Poll shell output if in shell mode and buffer exists
         if self.mode == Mode::Shell {
             if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
@@ -530,7 +531,7 @@ impl Editor {
         Ok(())
     }
     
-    fn draw_file_tree(&self) -> Result<(), Box<dyn StdError>> {
+    fn draw_file_tree(&self) -> Result<()> {
         if let Some(tree) = &self.file_tree {
             let tree_width = tree.width;
             let display_height = self.terminal_height.saturating_sub(2);
@@ -602,7 +603,7 @@ impl Editor {
         Ok(())
     }
     
-    fn draw_window_borders(&self, window: &Window, adjusted_x: usize, is_active: bool) -> Result<(), Box<dyn StdError>> {
+    fn draw_window_borders(&self, window: &Window, adjusted_x: usize, is_active: bool) -> Result<()> {
         let border_color = if is_active { Color::Green } else { Color::Grey };
         
         // Draw horizontal borders
@@ -656,7 +657,7 @@ impl Editor {
         Ok(())
     }
     
-    fn draw_window_content(&self, window: &Window, adjusted_x: usize) -> Result<(), Box<dyn StdError>> {
+    fn draw_window_content(&self, window: &Window, adjusted_x: usize) -> Result<()> {
         let effective_width = if self.windows.len() > 1 { window.width - 2 } else { window.width };
         let effective_height = if self.windows.len() > 1 { window.height - 2 } else { window.height };
         
@@ -734,7 +735,7 @@ impl Editor {
         Ok(())
     }
     
-    fn draw_status_line(&self) -> Result<(), Box<dyn StdError>> {
+    fn draw_status_line(&self) -> Result<()> {
         let status = match self.mode {
             Mode::Normal => " NORMAL ",
             Mode::Insert => " INSERT ",
@@ -792,7 +793,7 @@ impl Editor {
         Ok(())
     }
     
-    fn draw_message_line(&self) -> Result<(), Box<dyn StdError>> {
+    fn draw_message_line(&self) -> Result<()> {
         execute!(
             io::stdout(),
             cursor::MoveTo(0, self.terminal_height as u16 - 1),
@@ -810,7 +811,7 @@ impl Editor {
         Ok(())
     }
     
-    fn process_insert_mode(&mut self, key: KeyEvent) -> Result<(), Box<dyn StdError>> {
+    fn process_insert_mode(&mut self, key: KeyEvent) -> Result<()> {
         if self.buffers.is_empty() || self.active_buffer >= self.buffers.len() {
             return Ok(());
         }
@@ -848,7 +849,7 @@ impl Editor {
         Ok(())
     }
     
-    fn process_shell_mode(&mut self, key: KeyEvent) -> Result<(), Box<dyn StdError>> {
+    fn process_shell_mode(&mut self, key: KeyEvent) -> Result<()> {
         if self.buffers.is_empty() || self.active_buffer >= self.buffers.len() {
             return Ok(());
         }
@@ -906,7 +907,7 @@ impl Editor {
         Ok(())
     }
     
-    fn process_keypress(&mut self) -> Result<(), Box<dyn StdError>> {
+    fn process_keypress(&mut self) -> Result<()> {
         match event::read()? {
             Event::Key(key_event) => {
                 match self.mode {
@@ -934,7 +935,7 @@ impl Editor {
         Ok(())
     }
     
-    fn process_normal_mode(&mut self, key: KeyEvent) -> Result<(), Box<dyn StdError>> {
+    fn process_normal_mode(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Char(' ') => {
                 self.waiting_for_second_key = true;
@@ -960,7 +961,7 @@ impl Editor {
         Ok(())
     }
     
-    fn process_visual_mode(&mut self, key: KeyEvent) -> Result<(), Box<dyn StdError>> {
+    fn process_visual_mode(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Esc => self.mode = Mode::Normal,
             KeyCode::Char('h') => self.move_cursor_left(),
@@ -973,7 +974,7 @@ impl Editor {
         Ok(())
     }
     
-    fn process_command_mode(&mut self, key: KeyEvent) -> Result<(), Box<dyn StdError>> {
+    fn process_command_mode(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Esc => self.mode = Mode::Normal,
             KeyCode::Enter => {
@@ -996,7 +997,7 @@ impl Editor {
         Ok(())
     }
     
-    fn process_file_tree_mode(&mut self, key: KeyEvent) -> Result<(), Box<dyn StdError>> {
+    fn process_file_tree_mode(&mut self, key: KeyEvent) -> Result<()> {
         if let Some(tree) = &mut self.file_tree {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => { // Added 'q' to close file tree
@@ -1067,7 +1068,7 @@ impl Editor {
         Ok(())
     }
     
-    fn process_second_key(&mut self, key: KeyEvent) -> Result<(), Box<dyn StdError>> {
+    fn process_second_key(&mut self, key: KeyEvent) -> Result<()> {
         self.waiting_for_second_key = false;
         
         match key.code {
@@ -1111,14 +1112,14 @@ impl Editor {
         Ok(())
     }
     
-    fn process_help_mode(&mut self, _key: KeyEvent) -> Result<(), Box<dyn StdError>> {
+    fn process_help_mode(&mut self, _key: KeyEvent) -> Result<()> {
         // Any key closes help
         self.mode = Mode::Normal;
         execute!(io::stdout(), cursor::Show)?; // Ensure cursor is shown when leaving help
         Ok(())
     }
     
-    fn process_mouse_event(&mut self, event: event::MouseEvent) -> Result<(), Box<dyn StdError>> {
+    fn process_mouse_event(&mut self, event: event::MouseEvent) -> Result<()> {
         // Disable mouse events when help is active
         if self.mode == Mode::Help {
             if let event::MouseEventKind::Down(_) = event.kind {
@@ -1258,44 +1259,49 @@ impl Editor {
         Ok(())
     }
     
-    fn execute_command(&mut self) -> Result<(), Box<dyn StdError>> {
+    fn execute_command(&mut self) -> Result<()> {
         match self.command_line.as_str() {
             "w" => {
                 if self.buffers.is_empty() || self.active_buffer >= self.buffers.len() {
-                    self.command_line = "No buffer to save".to_string();
-                    return Ok(());
+                    return Err(Error::Message("No buffer to save".to_string()));
                 }
                 
                 if let Err(e) = self.buffers[self.active_buffer].save() {
                     self.command_line = format!("Error saving: {}", e);
+                    return Err(e);
                 } else {
                     self.command_line = "File saved".to_string();
+                    return Ok(());
                 }
             },
-            "q" => self.quit = true,
+            "q" => {
+                self.quit = true;
+                Ok(())
+            },
             "wq" => {
                 if self.buffers.is_empty() || self.active_buffer >= self.buffers.len() {
-                    self.command_line = "No buffer to save".to_string();
-                    return Ok(());
+                    return Err(Error::Message("No buffer to save".to_string()));
                 }
                 
                 if let Err(e) = self.buffers[self.active_buffer].save() {
                     self.command_line = format!("Error saving: {}", e);
+                    return Err(e);
                 } else {
                     self.quit = true;
+                    return Ok(());
                 }
             },
             "help" => {
-                self.previous_mode = self.mode; // Store current mode before switching to Help
+                self.previous_mode = self.mode;
                 self.mode = Mode::Help;
-                self.command_line.clear(); // Clear command line for help screen
+                self.command_line.clear();
+                Ok(())
             },
             _ => {
                 self.command_line = format!("Unknown command: {}", self.command_line);
+                Ok(())
             }
         }
-        
-        Ok(())
     }
     
     // Cursor movement methods
@@ -1520,7 +1526,7 @@ impl Editor {
         }
     }
     
-    fn close_window(&mut self) -> Result<(), Box<dyn StdError>> {
+    fn close_window(&mut self) -> Result<()> {
         if self.windows.len() <= 1 {
             // Optionally, quit if it's the last window and buffer
             if self.buffers.len() <= 1 && self.mode != Mode::Help { // Don't quit if help is shown over last buffer
@@ -1559,7 +1565,7 @@ impl Editor {
         c.is_whitespace() || c.is_ascii_punctuation()
     }
     
-    fn draw_help_screen(&self) -> Result<(), Box<dyn StdError>> {
+    fn draw_help_screen(&self) -> Result<()> {
         let help_title = " RVim Keybindings ";
         let help_content = vec![
             "",
