@@ -1,8 +1,9 @@
-use std::error::Error;
+use std::error::Error as StdError;
 use std::fs;
 use std::path::{Path, PathBuf};
 use log::info;
-use mlua::{Lua, Table, Value};
+use mlua::{Lua, Table};
+use crate::error::{Error, Result};
 
 /// Represents a Vim plugin
 pub struct Plugin {
@@ -36,7 +37,7 @@ impl PluginManager {
     }
     
     /// Discover and load plugins
-    pub fn discover_plugins(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn discover_plugins(&mut self) -> Result<()> {
         if !self.plugins_dir.exists() {
             fs::create_dir_all(&self.plugins_dir)?;
         }
@@ -50,7 +51,7 @@ impl PluginManager {
             
             if path.is_dir() {
                 let plugin_name = path.file_name()
-                    .ok_or("Invalid plugin directory name")?
+                    .ok_or_else(|| Error::Message("Invalid plugin directory name".to_string()))?
                     .to_string_lossy()
                     .to_string();
                 
@@ -76,7 +77,7 @@ impl PluginManager {
     }
     
     /// Load all plugins into the Lua state
-    pub fn load_plugins(&self) -> Result<(), Box<dyn Error>> {
+    pub fn load_plugins(&self) -> Result<()> {
         if let Some(lua) = &self.lua {
             for plugin in &self.plugins {
                 if plugin.enabled {
@@ -85,14 +86,14 @@ impl PluginManager {
                 }
             }
         } else {
-            return Err("Lua state not set".into());
+            return Err(Error::Message("Lua state not set".to_string()));
         }
         
         Ok(())
     }
     
     /// Load a specific plugin
-    fn load_plugin(&self, lua: &mlua::Lua, plugin: &Plugin) -> Result<(), Box<dyn Error>> {
+    fn load_plugin(&self, lua: &mlua::Lua, plugin: &Plugin) -> Result<()> {
         // Add plugin's lua directory to package.path
         let lua_dir = plugin.path.join("lua");
         if lua_dir.exists() {
@@ -126,10 +127,10 @@ impl PluginManager {
     }
     
     /// Install a plugin from a Git repository
-    pub fn install_plugin(&mut self, url: &str) -> Result<(), Box<dyn Error>> {
+    pub fn install_plugin(&mut self, url: &str) -> Result<()> {
         // Extract plugin name from URL (last part of URL without .git)
         let name = url.split('/').last()
-            .ok_or("Invalid URL format")?
+            .ok_or_else(|| Error::Message("Invalid URL format".to_string()))?
             .trim_end_matches(".git");
             
         info!("Installing plugin: {} from {}", name, url);
@@ -142,12 +143,10 @@ impl PluginManager {
             return Ok(());
         }
         
-        // For a real implementation, you would use a library like git2-rs
-        // or spawn a git process to clone the repository
-        // Here, we'll just create the directory as a placeholder
+        // Create the directory as a placeholder
         fs::create_dir_all(&plugin_dir)?;
         
-        // Create a basic init.lua file to mark this as a plugin
+        // Create a basic init.lua file 
         let init_lua = plugin_dir.join("init.lua");
         fs::write(&init_lua, format!("-- Plugin: {}\n-- URL: {}\n\nreturn {{\n  setup = function()\n    print('Plugin {} loaded')\n  end\n}}\n", name, url, name))?;
         

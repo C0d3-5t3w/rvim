@@ -1,4 +1,4 @@
-use std::error::Error;
+use crate::error::{Error, Result};
 use std::io::{self, Write, BufReader, BufRead};
 use std::process::{Command, Stdio, Child, ChildStdin, ChildStdout, ChildStderr};
 use std::thread;
@@ -56,7 +56,7 @@ impl Shell {
         shell_instance
     }
 
-    fn spawn_system_shell(&mut self) -> Result<(), Box<dyn Error>> {
+    fn spawn_system_shell(&mut self) -> Result<()> {
         let shell_cmd = env::var("SHELL").unwrap_or_else(|_| {
             if cfg!(windows) { "cmd.exe".to_string() } else { "sh".to_string() }
         });
@@ -67,11 +67,14 @@ impl Shell {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()?;
+            .spawn()
+            .map_err(|e| Error::ShellSpawnError(format!("Failed to spawn shell: {}", e)))?;
 
         self.child_stdin = child_process.stdin.take();
-        let child_stdout = child_process.stdout.take().ok_or("Failed to capture stdout")?;
-        let child_stderr = child_process.stderr.take().ok_or("Failed to capture stderr")?;
+        let child_stdout = child_process.stdout.take()
+            .ok_or_else(|| Error::ShellSpawnError("Failed to capture stdout".to_string()))?;
+        let child_stderr = child_process.stderr.take()
+            .ok_or_else(|| Error::ShellSpawnError("Failed to capture stderr".to_string()))?;
         
         self.child = Some(child_process);
 
@@ -162,7 +165,7 @@ impl Shell {
     }
 
 
-    pub fn execute_command(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn execute_command(&mut self) -> Result<()> {
         self.poll_output(); 
 
         let command_trimmed = self.input_line.trim();
@@ -196,18 +199,15 @@ impl Shell {
                     self.history_position = self.command_history.len();
                 }
 
-                if let Err(e) = writeln!(stdin, "{}", self.input_line) {
-                    self.lines.push(format!("Error writing to shell: {}", e));
-                    self.running = false; 
-                } else if let Err(e) = stdin.flush() {
-                     self.lines.push(format!("Error flushing shell stdin: {}", e));
-                }
+                writeln!(stdin, "{}", self.input_line)
+                    .map_err(|e| Error::ShellInputError(format!("Failed to write to shell: {}", e)))?;
+                stdin.flush()
+                    .map_err(|e| Error::ShellInputError(format!("Failed to flush shell stdin: {}", e)))?;
             } else {
-                 if let Err(e) = writeln!(stdin, "") { 
-                    self.lines.push(format!("Error writing to shell: {}", e));
-                 } else if let Err(e) = stdin.flush() {
-                     self.lines.push(format!("Error flushing shell stdin: {}", e));
-                 }
+                writeln!(stdin, "")
+                    .map_err(|e| Error::ShellInputError(format!("Failed to write newline: {}", e)))?;
+                stdin.flush()
+                    .map_err(|e| Error::ShellInputError(format!("Failed to flush shell stdin: {}", e)))?;
             }
         } else {
             self.lines.push("Shell not running or stdin unavailable.".to_string());

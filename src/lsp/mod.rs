@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio, Child};
@@ -7,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::env;
 use std::fs;
 use log::{info, error, warn};
+use crate::error::{Error, Result};
 
 /// Map file extensions to language IDs
 fn get_language_id_from_extension(ext: &str) -> Option<&'static str> {
@@ -39,9 +39,9 @@ struct LspServerConfig {
     language_id: &'static str,
     executable: &'static str,
     args: Vec<&'static str>,
-    installation_paths: Vec<PathBuf>, // Possible locations to look for the server
-    installation_check: fn() -> bool, // Function to check if the server is installed
-    install_command: &'static str,    // Command to suggest for installation
+    installation_paths: Vec<PathBuf>, 
+    installation_check: fn() -> bool,
+    install_command: &'static str,
 }
 
 /// LSP error structure
@@ -58,7 +58,17 @@ impl fmt::Display for LspError {
     }
 }
 
-impl Error for LspError {}
+impl std::error::Error for LspError {}
+
+impl From<LspError> for Error {
+    fn from(err: LspError) -> Self {
+        Error::LspError {
+            code: err.code,
+            message: err.message,
+            language: None,
+        }
+    }
+}
 
 /// Active language server process
 pub struct LanguageServer {
@@ -70,7 +80,7 @@ pub struct LanguageServer {
 }
 
 impl LanguageServer {
-    pub fn new(language_id: &str, executable: &str, args: &[&str], root_dir: &Path) -> Result<Self, Box<dyn Error>> {
+    pub fn new(language_id: &str, executable: &str, args: &[&str], root_dir: &Path) -> Result<Self> {
         info!("Starting language server for {}: {} {:?}", language_id, executable, args);
         
         let process = Command::new(executable)
@@ -79,7 +89,8 @@ impl LanguageServer {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()?;
+            .spawn()
+            .map_err(|e| Error::LspInitializationError(format!("Failed to start {}: {}", executable, e)))?;
         
         Ok(Self {
             language_id: language_id.to_string(),
@@ -90,9 +101,10 @@ impl LanguageServer {
         })
     }
     
-    pub fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn shutdown(&mut self) -> Result<()> {
         info!("Shutting down language server for {}", self.language_id);
-        self.process.kill()?;
+        self.process.kill()
+            .map_err(|e| Error::LspConnectionError(format!("Failed to kill server: {}", e)))?;
         Ok(())
     }
 }
@@ -247,7 +259,7 @@ impl LspManager {
     }
     
     // Start a language server for a specific file if available
-    pub fn start_server_for_file(&mut self, file_path: &Path) -> Result<Option<String>, Box<dyn Error>> {
+    pub fn start_server_for_file(&mut self, file_path: &Path) -> Result<Option<String>> {
         if let Some(lang_id) = self.get_language_id_for_file(file_path) {
             // Check if server for this language is already running
             if self.servers.contains_key(&lang_id) {
@@ -286,6 +298,7 @@ impl LspManager {
             }
             
             warn!("No server configuration found for language: {}", lang_id);
+            return Err(Error::LspServerNotFound(lang_id));
         } else {
             info!("No language server available for file: {:?}", file_path);
         }
@@ -294,7 +307,7 @@ impl LspManager {
     }
     
     // Shutdown all running servers
-    pub fn shutdown_all_servers(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn shutdown_all_servers(&mut self) -> Result<()> {
         for (lang_id, server) in self.servers.iter() {
             if let Ok(mut server) = server.lock() {
                 if let Err(e) = server.shutdown() {

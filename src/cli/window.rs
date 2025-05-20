@@ -1,5 +1,6 @@
-use std::error::Error;
+use std::error::Error as StdError;
 use std::path::PathBuf;
+use crate::error::{Error, Result};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum SplitType {
@@ -37,7 +38,7 @@ impl Window {
         }
     }
 
-    pub fn split(&self, split_type: &SplitType) -> Result<(Window, Window), Box<dyn Error>> {
+    pub fn split(&self, split_type: &SplitType) -> Result<(Window, Window)> {
         match split_type {
             SplitType::Horizontal => {
                 // Split window horizontally (one above, one below)

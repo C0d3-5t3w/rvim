@@ -3,18 +3,21 @@
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use std::error::Error;
 use simplelog::*;
 use std::fs::File;
 use log::info;
 
 mod cli;
 mod lsp;
+mod error;
 
-fn main() -> Result<(), Box<dyn Error>> {
+use error::{Error, Result};
+
+fn main() -> Result<()> {
     // Initialize logging
+    let log_file = File::create("rvim.log")?;
     CombinedLogger::init(vec![
-        WriteLogger::new(LevelFilter::Info, Config::default(), File::create("rvim.log")?),
+        WriteLogger::new(LevelFilter::Info, Config::default(), log_file),
     ])?;
     
     // Parse command line arguments
@@ -41,10 +44,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     editor.run()
 }
 
-fn get_config_path() -> Result<PathBuf, Box<dyn Error>> {
+fn get_config_path() -> Result<PathBuf> {
     // First try the user's configuration directory (installed location)
     let user_config_path = dirs::config_dir()
-        .ok_or("Could not find config directory")?
+        .ok_or_else(|| Error::ConfigError("Could not find config directory".to_string()))?
         .join("rvim");
     
     if user_config_path.exists() && user_config_path.join("config.lua").exists() {
@@ -54,6 +57,7 @@ fn get_config_path() -> Result<PathBuf, Box<dyn Error>> {
     
     // If user config doesn't exist or is incomplete, check if we're running from source
     let current_dir = env::current_dir()?;
+    // Fix the source config path - don't use ~ as it's not expanded automatically
     let source_config_path = current_dir.join("config");
     
     if source_config_path.exists() && source_config_path.join("config.lua").exists() {

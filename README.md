@@ -1,20 +1,44 @@
 # RVim - Rust-based Vim Clone
 
-RVim is a lightweight Vim clone written in Rust with a Lua configuration system similar to Neovim.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+RVim is a lightweight, modern Vim clone written in Rust with a Lua configuration system similar to Neovim. It aims to provide a familiar modal editing experience with additional modern features while maintaining high performance and cross-platform compatibility.
 
 ## Features
 
-- Vim-like modal editing (Normal, Insert, Visual, Command modes)
-- File tree browser (toggle with Space+e)
-- Integrated shell terminals (horizontal with Space+h, vertical with Space+v)
-- Buffer management (close current buffer with Space+x)
-- Window management
-- Lua configuration system
-- Plugin support through Lua
-- Fast and memory-efficient
-- Cross-platform
+- **Vim-like Modal Editing**
+  - Normal, Insert, Visual, and Command modes
+  - Familiar keybindings for Vim users
+  - Command-line with `:` prefixed commands
+  
+- **Multiple Windows & Buffers**
+  - Split windows horizontally or vertically
+  - Efficient buffer management
+  - Multiple file editing
+  
+- **File Management**
+  - Built-in file tree browser (toggle with `Space+e`)
+  - Directory navigation and file operations
+  
+- **Integrated Terminal**
+  - Open shell terminals within the editor
+  - Horizontal shells with `Space+h`
+  - Vertical shells with `Space+v`
+  
+- **Extensibility**
+  - Lua configuration system
+  - Plugin support through Lua
+  - Neovim compatibility layer
 
-## Installation
+- **Modern Development Features**
+  - LSP (Language Server Protocol) integration
+  - Syntax highlighting
+  - Fast and memory-efficient
+  - Cross-platform (Linux, macOS, Windows)
+
+## Quick Start
+
+### Installation
 
 ```bash
 # Clone the repository
@@ -28,21 +52,7 @@ make build
 make install
 ```
 
-## Configuration
-
-RVim uses Lua for configuration. When you run `make install`, the configuration files are copied to:
-
-- Linux/macOS: `~/.config/rvim/`
-- Windows: `%APPDATA%\rvim\`
-
-The main configuration file is `config.lua`. You can edit this file to customize RVim to your liking.
-
-If you run RVim without installing, it will look for configuration files in the following order:
-1. User config directory (`~/.config/rvim/` on Linux/macOS)
-2. Source code's `config/` directory
-3. If neither exists, it will create a default configuration
-
-## Usage
+### Basic Usage
 
 ```bash
 # Open a file
@@ -50,39 +60,57 @@ rvim path/to/file.txt
 
 # Create a new file
 rvim
+
+# Open multiple files
+rvim file1.txt file2.txt
 ```
 
-### File Tree Browser
+## Key Bindings
 
-- Press `Space` followed by `e` to toggle the file tree browser
-- Navigate with `j` (down) and `k` (up)
-- Press `Enter` or `l` to open a file or expand a directory
-- Press `h` to collapse a directory
-- Press `Esc` to close the file tree
+### Global
 
-### Shell Commands
+- `Space` - Leader key for special commands
+- `:help` - Show help screen with keybindings
 
-- Press `Space` followed by `h` to open a horizontal shell terminal
-- Press `Space` followed by `v` to open a vertical shell terminal
-- Type commands and press `Enter` to execute them
-- Use arrow keys to navigate command history
-- Press `Esc` to exit shell mode
+### Navigation Modes
 
-### Buffer Management
+- `Esc` - Return to Normal mode from any other mode
+- `i` - Enter Insert mode
+- `v` - Enter Visual mode
+- `:` - Enter Command mode
 
-- Press `Space` followed by `x` to close the current buffer
-- Use `:w` to save the current buffer
-- Use `:q` to quit
-- Use `:wq` to save and quit
+### File Operations
+
+- `:w` - Save current file
+- `:q` - Quit
+- `:wq` - Save and quit
 
 ### Window Management
 
-- Press `Space` followed by `w` to cycle through windows
-- Press `Space` followed by `q` to close the current window
+- `Space+w` - Cycle through windows
+- `Space+q` - Close current window
+- `Space+x` - Close current buffer
+
+### File Navigation
+
+- `Space+e` - Toggle file tree browser
+- In file tree: 
+  - `j/k` - Navigate up/down
+  - `l/Enter` - Open file or expand directory
+  - `h` - Collapse directory or go to parent
+
+### Terminal Integration
+
+- `Space+h` - Open horizontal shell
+- `Space+v` - Open vertical shell
+- In shell mode:
+  - `Esc` - Exit shell mode
+  - `Enter` - Execute command
+  - Up/Down arrows - Navigate command history
 
 ## Configuration
 
-RVim uses Lua for configuration. The default configuration file is located at:
+RVim uses Lua for configuration. The main configuration file is located at:
 
 - Linux/macOS: `~/.config/rvim/config.lua`
 - Windows: `%APPDATA%\rvim\config.lua`
@@ -93,8 +121,6 @@ Example configuration:
 -- Set key mappings
 rvim.map('n', '<C-s>', ':w<CR>')                 -- Ctrl+S to save in normal mode
 rvim.map('n', '<space>v', 'open_vertical_shell') -- Space+v for vertical shell
-rvim.map('n', '<space>h', 'open_horizontal_shell') -- Space+h for horizontal shell
-rvim.map('n', '<space>x', 'close_buffer')        -- Space+x to close current buffer
 
 -- User settings
 local settings = {
@@ -106,29 +132,23 @@ local settings = {
     show_hidden = false,   -- Show hidden files
   }
 }
-
--- Define custom functions
-local function hello_world()
-  print("Hello from Lua!")
-end
 ```
 
-## Creating Plugins
+For detailed documentation, see the [DOC.md](doc/DOC.md) file.
 
-Plugins can be created as Lua modules:
+## Development Status
 
-```lua
-local plugin = {}
+RVim is currently in active development. While it's stable enough for daily use, you may encounter bugs or missing features. Contributions are welcome!
 
-function plugin.setup()
-  -- Plugin initialization
-  rvim.map('n', '<leader>p', function()
-    print("Plugin function called!")
-  end)
-end
+## Contributing
 
-return plugin
-```
+Contributions are welcome! Feel free to submit issues, feature requests, or pull requests.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ## License 📄
 

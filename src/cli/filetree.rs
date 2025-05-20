@@ -1,7 +1,8 @@
-use std::error::Error;
+use std::error::Error as StdError;
 use std::fs;
 use std::path::{Path, PathBuf};
 use log::info;
+use crate::error::{Error, Result};
 
 pub struct FileTreeEntry {
     pub name: String,
@@ -21,7 +22,7 @@ pub struct FileTree {
 }
 
 impl FileTree {
-    pub fn new(path: &Path) -> Result<Self, Box<dyn Error>> {
+    pub fn new(path: &Path) -> Result<Self> {
         let root = if path.is_dir() {
             path.to_path_buf()
         } else {
@@ -44,13 +45,13 @@ impl FileTree {
         Ok(tree)
     }
 
-    pub fn refresh(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn refresh(&mut self) -> Result<()> {
         self.entries.clear();
         self.load_entries(&self.root.clone(), 0)?;
         Ok(())
     }
 
-    fn load_entries(&mut self, dir: &Path, level: usize) -> Result<(), Box<dyn Error>> {
+    fn load_entries(&mut self, dir: &Path, level: usize) -> Result<()> {
         let entries = fs::read_dir(dir)?;
 
         // First collect all entries to sort them
@@ -130,7 +131,7 @@ impl FileTree {
         false
     }
     
-    pub fn move_to_parent(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn move_to_parent(&mut self) -> Result<()> {
         if self.cursor < self.entries.len() {
             let current_entry = &self.entries[self.cursor];
             
@@ -157,7 +158,7 @@ impl FileTree {
         Ok(())
     }
     
-    pub fn toggle_expand(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn toggle_expand(&mut self) -> Result<()> {
         if self.entries.is_empty() || self.cursor >= self.entries.len() {
             return Ok(());
         }
@@ -205,7 +206,7 @@ impl FileTree {
         Ok(())
     }
     
-    fn load_directory_entries(&self, dir: &Path, level: usize, entries: &mut Vec<FileTreeEntry>) -> Result<(), Box<dyn Error>> {
+    fn load_directory_entries(&self, dir: &Path, level: usize, entries: &mut Vec<FileTreeEntry>) -> Result<()> {
         let mut dirs = Vec::new();
         let mut files = Vec::new();
         
