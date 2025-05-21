@@ -712,24 +712,26 @@ impl Editor {
                 }
             }
         } else {
-            // Draw document content
+            let total_lines = buffer.document.lines.len();
+            let gutter_width = total_lines.to_string().len().max(2);
             for y in 0..effective_height {
                 let file_row = y + buffer.offset_y;
-                
-                execute!(io::stdout(), cursor::MoveTo(content_x as u16, (content_y + y) as u16))?;
-                
+                execute!(io::stdout(),
+                    cursor::MoveTo(content_x as u16, (content_y + y) as u16)
+                )?;
+                // line-number gutter
+                if file_row < total_lines {
+                    print!("{:>width$} ", file_row + 1, width = gutter_width);
+                } else {
+                    print!("{:width$} ", "", width = gutter_width);
+                }
+                // then the text
                 if file_row >= buffer.document.lines.len() {
-                    if y == window.height / 3 && buffer.document.lines.len() == 1 && buffer.document.lines[0].is_empty() {
-                        let welcome = format!("RVim - Version 0.1.0\n\nCreated by C0d3-5t3w");
-                        let padding = (effective_width - welcome.len()) / 2;
-                        print!("~{}{}", " ".repeat(padding.saturating_sub(1)), welcome);
-                    } else {
-                        print!("~");
-                    }
+                    print!(" ");
                 } else {
                     let line = &buffer.document.lines[file_row];
                     let start = buffer.offset_x.min(line.len());
-                    let end = (buffer.offset_x + effective_width).min(line.len());
+                    let end = (buffer.offset_x + effective_width - gutter_width - 1).min(line.len());
                     if start < end {
                         print!("{}", &line[start..end]);
                     }
@@ -741,62 +743,45 @@ impl Editor {
     }
     
     fn draw_status_line(&self) -> Result<()> {
-        let status = match self.mode {
-            Mode::Normal => " NORMAL ",
-            Mode::Insert => " INSERT ",
-            Mode::Visual => " VISUAL ",
-            Mode::Command => " COMMAND ",
-            Mode::FileTree => " FILE TREE ",
-            Mode::Shell => " SHELL ",
-            Mode::Help => " HELP ",
-            Mode::TabSwitcher => " TAB ",
-        };
-        
-        // Get buffer info
-        let buffer_info = if !self.buffers.is_empty() && self.active_buffer < self.buffers.len() {
-            let buffer = &self.buffers[self.active_buffer];
-            if buffer.is_shell {
-                "[Shell]".to_string()
-            } else {
-                let name = buffer.filename.clone().unwrap_or_else(|| "[No Name]".into());
-                let modified = if buffer.document.modified { "[+]" } else { "" };
-                format!("{}{}", name, modified)
-            }
-        } else {
-            "[No Buffer]".to_string()
-        };
-        
-        // Add tab list to status line
-        let tabs = self.tab_manager.tab_list()
-            .iter()
-            .map(|(id, name)| {
-                if *id == self.tab_manager.current_tab() {
-                    format!("[*{}]", name)
-                } else {
-                    format!("[{}]", name)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+        // File and position info
+        let (line, col, total) = if let Some(buf) = self.buffers.get(self.active_buffer) {
+            let l = buf.cursor_y + 1;
+            let c = buf.cursor_x + 1;
+            let t = buf.document.lines.len();
+            (l, c, t)
+        } else { (0,0,0) };
+        let pct = if total > 0 { (line as f32 / total as f32) * 100.0 } else { 0.0 };
+        let pos_info = format!("L{}/C{}  {}/{} ({:.0}%)", line, col, line, total, pct);
 
-        let status_line = format!("{}{} {}", status, buffer_info, tabs);
-        
+        let status = match self.mode {
+            Mode::Normal => "NORMAL",
+            Mode::Insert => "INSERT",
+            Mode::Visual => "VISUAL",
+            Mode::Command => "COMMAND",
+            Mode::FileTree => "FILETREE",
+            Mode::Shell => "SHELL",
+            Mode::Help => "HELP",
+            Mode::TabSwitcher => "TAB",
+        };
+        let fname = self.buffers
+            .get(self.active_buffer)
+            .and_then(|b| b.filename.clone())
+            .unwrap_or("[No Name]".into());
+        let modified = if let Some(b) = self.buffers.get(self.active_buffer) {
+            if b.document.modified { "[+]" } else { "" }
+        } else { "" };
+        let status_line = format!(" {} | {}{} | {} ",
+            status, fname, modified, pos_info);
+
         execute!(
             io::stdout(),
             cursor::MoveTo(0, self.terminal_height as u16 - 2),
             SetForegroundColor(Color::Black),
             SetBackgroundColor(Color::White)
         )?;
-        
-        let width = self.terminal_width;
-        let padding = width.saturating_sub(status_line.len());
-        print!("{}{}", status_line, " ".repeat(padding));
-        
-        execute!(
-            io::stdout(),
-            ResetColor
-        )?;
-        
+        let pad = self.terminal_width.saturating_sub(status_line.len());
+        print!("{}{}", status_line, " ".repeat(pad));
+        execute!(io::stdout(), ResetColor)?;
         Ok(())
     }
     
@@ -973,6 +958,14 @@ impl Editor {
             KeyCode::Char('w') => self.move_to_next_word_start(),
             KeyCode::Char('e') => self.move_to_next_word_end(),
             KeyCode::Char('b') => self.move_to_prev_word_start(),
+            KeyCode::Char('d') => {
+                self.delete_current_line()?;
+                Ok(())
+            },
+            KeyCode::Char('x') => {
+                self.delete_char_under_cursor()?;
+                Ok(())
+            },
             _ => Ok(())
         }
     }
@@ -1353,6 +1346,37 @@ impl Editor {
     fn process_help_mode(&mut self, key: KeyEvent) -> Result<()> {
         // Any key press exits help mode
         self.mode = self.previous_mode;
+        Ok(())
+    }
+
+    // Delete the entire line at the cursor
+    fn delete_current_line(&mut self) -> Result<()> {
+        if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
+            let row = buffer.cursor_y;
+            if row < buffer.document.lines.len() {
+                buffer.document.lines.remove(row);
+                buffer.document.modified = true;
+                // clamp cursor
+                if buffer.cursor_y >= buffer.document.lines.len() && !buffer.document.lines.is_empty() {
+                    buffer.cursor_y = buffer.document.lines.len() - 1;
+                }
+                buffer.cursor_x = 0;
+            }
+        }
+        Ok(())
+    }
+
+    // Delete the character under the cursor
+    fn delete_char_under_cursor(&mut self) -> Result<()> {
+        if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
+            if buffer.document.delete_char(buffer.cursor_y, buffer.cursor_x) {
+                // clamp cursor_x to line length
+                let line_len = buffer.document.lines[buffer.cursor_y].len();
+                if buffer.cursor_x > line_len {
+                    buffer.cursor_x = line_len;
+                }
+            }
+        }
         Ok(())
     }
 }

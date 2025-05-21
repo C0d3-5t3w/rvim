@@ -207,7 +207,9 @@ impl Document {
         }
         
         // Update rope
-        let pos = self.get_char_position(row, col);
+        // calculate and clamp to valid range
+        let mut pos = self.get_char_position(row, col);
+        pos = pos.min(self.rope.len_chars());
         self.rope.insert_char(pos, c);
         self.modified = true;
     }
@@ -221,10 +223,15 @@ impl Document {
         if col < line.len() {
             line.remove(col);
             // Update rope
+            // only remove if within bounds
             let pos = self.get_char_position(row, col);
-            self.rope.remove(pos..pos+1);
-            self.modified = true;
-            true
+            if pos < self.rope.len_chars() {
+                self.rope.remove(pos..pos+1);
+                self.modified = true;
+                true
+            } else {
+                false
+            }
         } else {
             false
         }
